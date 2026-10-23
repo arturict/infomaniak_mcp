@@ -25,6 +25,9 @@ export interface PaginationOptions {
 export interface ApiResponse<T = unknown> {
   result: string;
   data: T;
+  /** Cursor-paginated (v3) endpoints: pass `cursor` back to get the next page. */
+  cursor?: string;
+  has_more?: boolean;
   error?: {
     code: string;
     description: string;
@@ -271,6 +274,9 @@ export interface Product {
   customer_name: string;
 }
 
+/** kDrive's root directory always has file id 1. */
+export const KDRIVE_ROOT_ID = 1;
+
 class TokenBucket {
   private tokens: number;
   private lastRefill: number;
@@ -374,6 +380,37 @@ export class InfomaniakClient {
     }
 
     return (await response.json()) as T;
+  }
+
+  /**
+   * Single non-JSON request (binary download or upload). Not retried: an
+   * upload is not idempotent, and downloads are cheap to re-request.
+   */
+  private async rawRequest(
+    method: 'GET' | 'POST',
+    path: string,
+    queryParams?: Record<string, string | number | boolean | undefined>,
+    payload?: { body: Uint8Array; contentType: string },
+  ): Promise<Response> {
+    await this.bucket.take();
+    const url = new URL(`${this.baseUrl}${path}`);
+    for (const [key, value] of Object.entries(queryParams ?? {})) {
+      if (value !== undefined) url.searchParams.append(key, String(value));
+    }
+    const headers: Record<string, string> = { Authorization: `Bearer ${this.token}` };
+    if (payload) headers['Content-Type'] = payload.contentType;
+    const response = await fetch(url, {
+      method,
+      headers,
+      // Copy into an ArrayBuffer-backed view, which is what BodyInit accepts.
+      body: payload ? new Uint8Array(payload.body) : undefined,
+      signal: AbortSignal.timeout(this.timeoutMs * 4),
+    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Infomaniak API Error (${response.status}): ${errorText.slice(0, 500)}`);
+    }
+    return response;
   }
 
   private async request<T>(
@@ -645,27 +682,45 @@ export class InfomaniakClient {
     return this.request<ApiResponse<KDrive>>('GET', `/2/drive/${driveId}`);
   }
 
-  async listKDriveFiles(driveId: number, parentId?: number): Promise<ApiResponse<KDriveFile[]>> {
-    const path = parentId
-      ? `/2/drive/${driveId}/files/${parentId}/files`
-      : `/2/drive/${driveId}/files`;
-    return this.request<ApiResponse<KDriveFile[]>>('GET', path);
+  // Endpoint paths for listing, search, directories, moves, links, trash,
+  // versions and activities follow Infomaniak's official kDrive MCP server
+  // (github.com/Infomaniak/mcp-server-kdrive). The root directory has id 1.
+  async listKDriveFiles(
+    driveId: number,
+    parentId: number = KDRIVE_ROOT_ID,
+    options: { cursor?: string; limit?: number; type?: 'file' | 'dir' } = {},
+  ): Promise<ApiResponse<KDriveFile[]>> {
+    return this.request<ApiResponse<KDriveFile[]>>('GET', `/3/drive/${driveId}/files/${parentId}/files`, undefined, {
+      cursor: options.cursor,
+      limit: options.limit,
+      'type[]': options.type,
+    });
   }
 
   async getKDriveFile(driveId: number, fileId: number): Promise<ApiResponse<KDriveFile>> {
     return this.request<ApiResponse<KDriveFile>>('GET', `/2/drive/${driveId}/files/${fileId}`);
   }
 
-  async searchKDriveFiles(driveId: number, query: string): Promise<ApiResponse<KDriveFile[]>> {
-    return this.request<ApiResponse<KDriveFile[]>>('GET', `/2/drive/${driveId}/files/search`, undefined, { query });
+  async searchKDriveFiles(
+    driveId: number,
+    query: string,
+    options: { directoryId?: number; depth?: 'unlimited' | 'child'; limit?: number } = {},
+  ): Promise<ApiResponse<KDriveFile[]>> {
+    return this.request<ApiResponse<KDriveFile[]>>('GET', `/3/drive/${driveId}/files/search`, undefined, {
+      query,
+      directory_id: options.directoryId,
+      depth: options.depth,
+      limit: options.limit,
+    });
   }
 
   async createKDriveDirectory(driveId: number, directory: { name: string; parent_id?: number }): Promise<ApiResponse<KDriveFile>> {
-    return this.request<ApiResponse<KDriveFile>>('POST', `/2/drive/${driveId}/files/directories`, directory);
+    const parentId = directory.parent_id ?? KDRIVE_ROOT_ID;
+    return this.request<ApiResponse<KDriveFile>>('POST', `/3/drive/${driveId}/files/${parentId}/directory`, { name: directory.name });
   }
 
   async moveKDriveFile(driveId: number, fileId: number, destinationDirectoryId: number): Promise<ApiResponse<KDriveFile>> {
-    return this.request<ApiResponse<KDriveFile>>('POST', `/2/drive/${driveId}/files/${fileId}/move`, { destination_directory_id: destinationDirectoryId });
+    return this.request<ApiResponse<KDriveFile>>('POST', `/3/drive/${driveId}/files/${fileId}/move/${destinationDirectoryId}`);
   }
 
   async copyKDriveFile(driveId: number, fileId: number, destinationDirectoryId: number): Promise<ApiResponse<KDriveFile>> {
@@ -681,28 +736,29 @@ export class InfomaniakClient {
   }
 
   async shareKDriveFile(driveId: number, fileId: number, options: { right?: string; valid_until?: string } = {}): Promise<ApiResponse<KDriveShareLink>> {
-    return this.request<ApiResponse<KDriveShareLink>>('POST', `/2/drive/${driveId}/files/${fileId}/shareable_link`, options);
+    return this.request<ApiResponse<KDriveShareLink>>('POST', `/2/drive/${driveId}/files/${fileId}/link`, options);
   }
 
   async listKDriveTrash(driveId: number): Promise<ApiResponse<KDriveFile[]>> {
-    return this.request<ApiResponse<KDriveFile[]>>('GET', `/2/drive/${driveId}/files/trash`);
+    return this.request<ApiResponse<KDriveFile[]>>('GET', `/3/drive/${driveId}/trash`);
   }
 
-  async restoreKDriveFile(driveId: number, fileId: number): Promise<ApiResponse<KDriveFile>> {
-    return this.request<ApiResponse<KDriveFile>>('POST', `/2/drive/${driveId}/files/trash/${fileId}/restore`);
+  async restoreKDriveFile(driveId: number, fileId: number, destinationDirectoryId?: number): Promise<ApiResponse<KDriveFile>> {
+    const body = destinationDirectoryId === undefined ? undefined : { destination_directory_id: destinationDirectoryId };
+    return this.request<ApiResponse<KDriveFile>>('POST', `/2/drive/${driveId}/trash/${fileId}/restore`, body);
   }
 
   async emptyKDriveTrash(driveId: number): Promise<ApiResponse<void>> {
-    return this.request<ApiResponse<void>>('DELETE', `/2/drive/${driveId}/files/trash`);
+    return this.request<ApiResponse<void>>('DELETE', `/2/drive/${driveId}/trash`);
   }
 
   async listKDriveFileVersions(driveId: number, fileId: number): Promise<ApiResponse<KDriveFileVersion[]>> {
-    return this.request<ApiResponse<KDriveFileVersion[]>>('GET', `/2/drive/${driveId}/files/${fileId}/versions`);
+    return this.request<ApiResponse<KDriveFileVersion[]>>('GET', `/3/drive/${driveId}/files/${fileId}/versions`);
   }
 
   async getKDriveActivity(driveId: number, fileId?: number): Promise<ApiResponse<KDriveActivity[]>> {
     const path = fileId
-      ? `/2/drive/${driveId}/files/${fileId}/activity`
+      ? `/3/drive/${driveId}/files/${fileId}/activities`
       : `/2/drive/${driveId}/activity`;
     return this.request<ApiResponse<KDriveActivity[]>>('GET', path);
   }
@@ -717,6 +773,48 @@ export class InfomaniakClient {
 
   async removeKDriveFavorite(driveId: number, fileId: number): Promise<ApiResponse<void>> {
     return this.request<ApiResponse<void>>('DELETE', `/2/drive/${driveId}/files/${fileId}/favorite`);
+  }
+
+  /**
+   * Download a file's raw bytes. Refuses before reading the body when the
+   * server announces a larger size, and again after reading as a backstop.
+   */
+  async downloadKDriveFile(driveId: number, fileId: number, maxBytes: number): Promise<{ bytes: Uint8Array; contentType: string }> {
+    const response = await this.rawRequest('GET', `/2/drive/${driveId}/files/${fileId}/download`);
+    const announced = Number(response.headers.get('content-length') ?? '0');
+    if (announced > maxBytes) {
+      await response.body?.cancel();
+      throw new Error(`File too large to return (${announced} bytes, max ${maxBytes})`);
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > maxBytes) {
+      throw new Error(`File too large to return (${bytes.byteLength} bytes, max ${maxBytes})`);
+    }
+    return { bytes, contentType: response.headers.get('content-type') ?? 'application/octet-stream' };
+  }
+
+  /**
+   * Upload a file in one request (/3/drive/{id}/upload, as used by Infomaniak's
+   * official kDrive MCP server). `conflict` decides what happens when a file
+   * with the same name exists: `error`, `rename` (keep both) or `version`
+   * (replace and keep the old content as a version).
+   */
+  async uploadKDriveFile(
+    driveId: number,
+    upload: { directoryId: number; fileName: string; content: Uint8Array; conflict: 'error' | 'rename' | 'version' },
+  ): Promise<ApiResponse<KDriveFile>> {
+    const response = await this.rawRequest(
+      'POST',
+      `/3/drive/${driveId}/upload`,
+      {
+        directory_id: upload.directoryId,
+        file_name: upload.fileName,
+        total_size: upload.content.byteLength,
+        conflict: upload.conflict,
+      },
+      { body: upload.content, contentType: 'application/octet-stream' },
+    );
+    return (await response.json()) as ApiResponse<KDriveFile>;
   }
 
   // Swiss Backup

@@ -239,11 +239,17 @@ export const KDriveFileIdSchema = z.object({
 export const ListKDriveFilesSchema = z.object({
   drive_id: z.number().positive(),
   parent_id: z.number().positive().optional(),
+  cursor: z.string().min(1).optional(),
+  limit: z.number().int().min(1).max(1000).optional(),
+  type: z.enum(['file', 'dir']).optional(),
 });
 
 export const SearchKDriveFilesSchema = z.object({
   drive_id: z.number().positive(),
   query: z.string({ required_error: 'query is required' }).min(1),
+  directory_id: z.number().positive().optional(),
+  depth: z.enum(['unlimited', 'child']).optional(),
+  limit: z.number().int().min(1).max(1000).optional(),
 });
 
 export const CreateKDriveDirectorySchema = z.object({
@@ -279,6 +285,7 @@ export const KDriveTrashSchema = z.object({
 export const KDriveRestoreFileSchema = z.object({
   drive_id: z.number().positive(),
   file_id: z.number().positive(),
+  destination_directory_id: z.number().positive().optional(),
 });
 
 export const KDriveActivitySchema = z.object({
@@ -300,6 +307,27 @@ export const KDriveFileVersionsSchema = z.object({
   file_id: z.number().positive(),
 });
 
+export const DownloadKDriveFileSchema = z.object({
+  drive_id: z.number().positive(),
+  file_id: z.number().positive(),
+  max_chars: z.number().int().min(1).max(200_000).optional(),
+});
+
+export const UploadKDriveFileSchema = z.object({
+  drive_id: z.number().positive(),
+  directory_id: z.number().positive().optional(),
+  file_name: z.string({ required_error: 'file_name is required' })
+    .min(1)
+    .max(255)
+    .refine((name) => !name.includes('/'), 'file_name must not contain "/"'),
+  content_text: z.string().optional(),
+  content_base64: z.string().optional(),
+  conflict: z.enum(['error', 'rename', 'version']).default('rename'),
+}).refine(
+  (v) => (v.content_text === undefined) !== (v.content_base64 === undefined),
+  'Provide exactly one of content_text or content_base64',
+);
+
 // Mail extras
 export const UpdateMailboxAutoresponderSchema = z.object({
   mail_id: z.number().positive(),
@@ -314,6 +342,113 @@ export const UpdateMailboxAutoresponderSchema = z.object({
 export const ListMailboxFoldersSchema = z.object({
   mail_id: z.number().positive(),
   mailbox_id: z.number().positive(),
+});
+
+// Infomaniak Mail (user-side message API)
+const MailboxSelector = z.string().min(1).optional();
+const FolderSelector = z.string().min(1);
+const MessageIds = z.array(z.string().min(1)).min(1, 'message_ids must not be empty').max(100);
+const DraftAttachment = z.object({
+  filename: z.string().min(1).max(255),
+  content_base64: z.string().min(1),
+  mime_type: z.string().min(1).optional(),
+});
+
+export const MailMailboxSchema = z.object({ mailbox: MailboxSelector });
+
+export const MailListEmailsSchema = z.object({
+  mailbox: MailboxSelector,
+  folder: FolderSelector.optional(),
+  limit: z.number().int().min(1).max(100).default(20),
+  offset: z.number().int().min(0).default(0),
+  unseen: z.boolean().optional(),
+  flagged: z.boolean().optional(),
+});
+
+const IsoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'use YYYY-MM-DD');
+
+export const MailSearchEmailsSchema = z.object({
+  mailbox: MailboxSelector,
+  query: z.string().min(1).optional(),
+  from: z.string().min(1).optional(),
+  to: z.string().min(1).optional(),
+  subject: z.string().min(1).optional(),
+  since: IsoDate.optional(),
+  before: IsoDate.optional(),
+  folder: FolderSelector.optional(),
+  limit: z.number().int().min(1).max(100).default(20),
+  offset: z.number().int().min(0).default(0),
+});
+
+export const MailReadEmailSchema = z.object({
+  mailbox: MailboxSelector,
+  folder: FolderSelector,
+  message_id: z.string().min(1),
+  format: z.enum(['text', 'html']).default('text'),
+  max_chars: z.number().int().min(100).max(200_000).default(20_000),
+});
+
+export const MailDownloadAttachmentSchema = z.object({
+  mailbox: MailboxSelector,
+  folder: FolderSelector,
+  message_id: z.string().min(1),
+  attachment_id: z.string().min(1),
+});
+
+export const MailCreateDraftSchema = z.object({
+  mailbox: MailboxSelector,
+  to: z.string().min(1),
+  subject: z.string(),
+  body: z.string(),
+  cc: z.string().optional(),
+  bcc: z.string().optional(),
+  in_reply_to_uid: z.string().min(3).optional(),
+  in_reply_to: z.string().optional(),
+  references: z.string().optional(),
+  from_email: z.string().optional(),
+  from_name: z.string().optional(),
+  attachments: z.array(DraftAttachment).max(10).optional(),
+});
+
+export const MailUpdateDraftSchema = z.object({
+  mailbox: MailboxSelector,
+  draft_uuid: z.string().min(1),
+  to: z.string().optional(),
+  subject: z.string().optional(),
+  body: z.string().optional(),
+  cc: z.string().optional(),
+  bcc: z.string().optional(),
+  attachments: z.array(DraftAttachment).max(10).optional(),
+});
+
+export const MailDraftIdSchema = z.object({
+  mailbox: MailboxSelector,
+  draft_uuid: z.string().min(1),
+});
+
+export const MailSendDraftSchema = MailDraftIdSchema.extend({
+  delay_seconds: z.number().int().min(0).max(7 * 24 * 3600).default(0),
+});
+
+export const MailMoveEmailsSchema = z.object({
+  mailbox: MailboxSelector,
+  folder: FolderSelector,
+  message_ids: MessageIds,
+  destination_folder: FolderSelector,
+});
+
+export const MailMarkSeenSchema = z.object({
+  mailbox: MailboxSelector,
+  folder: FolderSelector,
+  message_ids: MessageIds,
+  seen: z.boolean(),
+});
+
+export const MailFlagSchema = z.object({
+  mailbox: MailboxSelector,
+  folder: FolderSelector,
+  message_ids: MessageIds,
+  flagged: z.boolean(),
 });
 
 // kChat schemas
@@ -361,7 +496,8 @@ export const KChatGetChannelPostsSchema = z.object({
 });
 
 // Helper function to validate and return typed result
-export function validate<T>(schema: z.ZodSchema<T>, data: unknown): T {
+// Typed on the schema so defaults and refinements produce the parsed output type.
+export function validate<S extends z.ZodTypeAny>(schema: S, data: unknown): z.output<S> {
   const result = schema.safeParse(data);
   if (!result.success) {
     const errors = result.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');

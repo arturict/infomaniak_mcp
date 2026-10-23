@@ -1,211 +1,192 @@
 /**
  * HTTP Transport Module
  *
- * Provides HTTP-based transport with SSE streaming for the MCP server.
- * Implements the MCP Streamable HTTP specification (2025-03-26).
+ * Serves the MCP Streamable HTTP transport on /mcp.
+ *
+ * Every /mcp request must carry `Authorization: Bearer <MCP_AUTH_TOKEN>`.
+ * The server refuses to start without a token unless MCP_ALLOW_NO_AUTH=true,
+ * because anyone who can reach it would otherwise act with the Infomaniak
+ * token. /health stays open and returns no configuration.
  *
  * @see https://modelcontextprotocol.io/specification/2025-03-26/basic/transports
  */
 
-import express, { Request, Response } from "express";
+import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import cors from "cors";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import { InfomaniakClient } from "../infomaniak-client.js";
-import { KChatClient } from "../kchat-client.js";
-import { createMcpServer } from "../server.js";
+import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 
 export interface HttpServerOptions {
   /** Port to listen on (default: 3000) */
   port?: number;
-  /** Host to bind to (default: '0.0.0.0' for cloud compatibility) */
+  /** Host to bind to (default: 0.0.0.0) */
   host?: string;
-  /** Enable stateless mode where each request creates a new session */
+  /** Create a fresh server for every request instead of keeping sessions */
   stateless?: boolean;
-  /** Allowed CORS origins (default: '*' allows all) */
-  corsOrigins?: string | string[];
+  /** Bearer token clients must present on /mcp */
+  authToken?: string;
+  /** Start without a token. Only for a trusted network or a fronting proxy that authenticates. */
+  allowNoAuth?: boolean;
+  /** Browser origins allowed by CORS (default: none, no CORS headers) */
+  corsOrigins?: string[];
 }
 
-// Store active transports for session management (stateful mode)
-const activeSessions = new Map<string, StreamableHTTPServerTransport>();
+/**
+ * Request bodies carry base64 file content for kDrive uploads and mail
+ * attachments (10 MB raw, about 13.4 MB as base64) plus JSON overhead.
+ */
+const MAX_BODY = "15mb";
+
+function jsonRpcError(res: Response, status: number, code: number, message: string): void {
+  res.status(status).json({ jsonrpc: "2.0", error: { code, message }, id: null });
+}
 
 /**
- * Start the MCP server with HTTP transport
- *
- * @param client - The Infomaniak API client
- * @param options - HTTP server configuration options
- * @param kchatClient - Optional kChat API client
+ * Compare SHA-256 digests so timingSafeEqual always sees equal lengths and
+ * the comparison time does not depend on the token length or content.
  */
-export async function startHttpServer(
-  client: InfomaniakClient,
-  options: HttpServerOptions = {},
-  kchatClient?: KChatClient | null,
-): Promise<void> {
-  const port = options.port ?? 3000;
-  const host = options.host ?? "0.0.0.0";
-  const stateless = options.stateless ?? false;
-  const corsOrigins = options.corsOrigins ?? "*";
+function bearerAuth(token: string) {
+  const expected = createHash("sha256").update(token).digest();
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const match = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? "");
+    const presented = createHash("sha256").update(match ? match[1].trim() : "").digest();
+    if (match && timingSafeEqual(presented, expected)) {
+      next();
+      return;
+    }
+    res.setHeader("WWW-Authenticate", 'Bearer realm="mcp"');
+    jsonRpcError(res, 401, -32001, "Unauthorized");
+  };
+}
 
+/** Parse MCP_CORS_ORIGINS: comma-separated origins; empty means no CORS. */
+export function parseCorsOrigins(value: string | undefined): string[] {
+  return (value ?? "").split(",").map((o) => o.trim()).filter(Boolean);
+}
+
+/**
+ * Build the Express app. Exported so tests exercise the real routes.
+ *
+ * @param createServer - Builds a configured MCP server for a session or request
+ */
+export function createHttpApp(createServer: () => Server, options: HttpServerOptions = {}): Express {
+  const stateless = options.stateless ?? false;
+  const corsOrigins = options.corsOrigins ?? [];
+  if (!options.authToken && !options.allowNoAuth) {
+    throw new Error("MCP_AUTH_TOKEN is required for the HTTP transport (or set MCP_ALLOW_NO_AUTH=true)");
+  }
+
+  const sessions = new Map<string, StreamableHTTPServerTransport>();
   const app = express();
 
-  // Enable CORS for browser-based MCP clients
-  app.use(cors({
-    origin: corsOrigins,
-    methods: ["GET", "POST", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Accept", "Mcp-Session-Id", "Last-Event-ID"],
-    exposedHeaders: ["Mcp-Session-Id"],
-    credentials: true,
-  }));
+  // CORS runs before auth: browser preflights carry no Authorization header.
+  if (corsOrigins.length > 0) {
+    app.use(cors({
+      origin: corsOrigins,
+      methods: ["GET", "POST", "DELETE", "OPTIONS"],
+      allowedHeaders: ["Content-Type", "Accept", "Authorization", "Mcp-Session-Id", "Mcp-Protocol-Version", "Last-Event-ID"],
+      exposedHeaders: ["Mcp-Session-Id"],
+    }));
+  }
 
-  app.use(express.json());
-
-  // Health check endpoint
   app.get("/health", (_req: Request, res: Response) => {
-    res.json({ status: "ok", transport: "http", stateless });
+    res.json({ status: "ok" });
   });
 
-  // MCP endpoint - POST for client-to-server messages
+  if (options.authToken) {
+    app.use("/mcp", bearerAuth(options.authToken));
+  }
+  app.use(express.json({ limit: MAX_BODY }));
+
+  async function handle(transport: StreamableHTTPServerTransport, req: Request, res: Response): Promise<void> {
+    try {
+      await transport.handleRequest(req, res, req.body);
+    } catch (error) {
+      console.error("MCP request error:", error instanceof Error ? error.message : String(error));
+      if (!res.headersSent) jsonRpcError(res, 500, -32603, "Internal server error");
+    }
+  }
+
   app.post("/mcp", async (req: Request, res: Response) => {
-    // Check for existing session
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-    let transport: StreamableHTTPServerTransport | undefined;
-
-    if (sessionId && activeSessions.has(sessionId)) {
-      // Reuse existing session
-      transport = activeSessions.get(sessionId);
-    } else if (!sessionId && isInitializeRequest(req.body)) {
-      // New initialization request - create new transport with pre-generated session ID
-      const newSessionId = randomUUID();
-
-      transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => newSessionId,
+    if (stateless) {
+      const server = createServer();
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      res.on("close", () => {
+        void transport.close();
+        void server.close();
       });
-
-      // Create and connect the MCP server for this session
-      const server = createMcpServer(client, kchatClient);
       await server.connect(transport);
-
-      // Store session immediately if stateful mode (before handleRequest)
-      if (!stateless) {
-        activeSessions.set(newSessionId, transport);
-        console.error(`Session created: ${newSessionId}`);
-
-        // Clean up session on close
-        transport.onclose = () => {
-          activeSessions.delete(newSessionId);
-          console.error(`Session closed: ${newSessionId}`);
-        };
-      }
-    } else {
-      // Invalid request - no session and not an initialization request
-      res.status(400).json({
-        jsonrpc: "2.0",
-        error: {
-          code: -32600,
-          message: "Invalid request: No session ID provided and not an initialization request",
-        },
-        id: null,
-      });
+      await handle(transport, req, res);
       return;
     }
 
-    // Handle the request through the transport
-    try {
-      await transport!.handleRequest(req, res, req.body);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error("MCP request error:", errorMessage);
-
-      if (!res.headersSent) {
-        res.status(500).json({
-          jsonrpc: "2.0",
-          error: { code: -32603, message: errorMessage },
-          id: null,
-        });
+    const sessionId = req.headers["mcp-session-id"];
+    if (typeof sessionId === "string") {
+      const transport = sessions.get(sessionId);
+      if (!transport) {
+        jsonRpcError(res, 404, -32001, "Session not found");
+        return;
       }
-    }
-  });
-
-  // MCP endpoint - GET for SSE stream (server-to-client notifications)
-  app.get("/mcp", async (req: Request, res: Response) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-
-    if (!sessionId || !activeSessions.has(sessionId)) {
-      res.status(400).json({
-        jsonrpc: "2.0",
-        error: {
-          code: -32600,
-          message: "Invalid request: Session not found",
-        },
-        id: null,
-      });
+      await handle(transport, req, res);
       return;
     }
 
-    const transport = activeSessions.get(sessionId)!;
-
-    try {
-      await transport.handleRequest(req, res);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error("MCP SSE error:", errorMessage);
-
-      if (!res.headersSent) {
-        res.status(500).json({
-          jsonrpc: "2.0",
-          error: { code: -32603, message: errorMessage },
-          id: null,
-        });
-      }
-    }
-  });
-
-  // MCP endpoint - DELETE for session termination
-  app.delete("/mcp", (req: Request, res: Response) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-
-    if (!sessionId) {
-      res.status(400).json({
-        jsonrpc: "2.0",
-        error: {
-          code: -32600,
-          message: "Invalid request: No session ID provided",
-        },
-        id: null,
-      });
+    if (!isInitializeRequest(req.body)) {
+      jsonRpcError(res, 400, -32600, "Invalid request: No session ID provided and not an initialization request");
       return;
     }
 
-    if (activeSessions.has(sessionId)) {
-      const transport = activeSessions.get(sessionId)!;
-      transport.close();
-      activeSessions.delete(sessionId);
-      res.status(200).json({ message: "Session terminated" });
-    } else {
-      res.status(404).json({
-        jsonrpc: "2.0",
-        error: {
-          code: -32600,
-          message: "Session not found",
-        },
-        id: null,
-      });
+    const newSessionId = randomUUID();
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => newSessionId });
+    sessions.set(newSessionId, transport);
+    transport.onclose = () => {
+      sessions.delete(newSessionId);
+    };
+    await createServer().connect(transport);
+    await handle(transport, req, res);
+  });
+
+  // GET opens the server-to-client SSE stream; DELETE ends a session.
+  const sessionRoute = async (req: Request, res: Response) => {
+    if (stateless) {
+      jsonRpcError(res, 405, -32000, "Method not allowed in stateless mode");
+      return;
     }
-  });
+    const sessionId = req.headers["mcp-session-id"];
+    const transport = typeof sessionId === "string" ? sessions.get(sessionId) : undefined;
+    if (!transport) {
+      jsonRpcError(res, typeof sessionId === "string" ? 404 : 400, -32600, "Session not found");
+      return;
+    }
+    await handle(transport, req, res);
+  };
+  app.get("/mcp", sessionRoute);
+  app.delete("/mcp", sessionRoute);
 
-  // Session management endpoints (for debugging/monitoring)
-  app.get("/mcp/sessions", (_req: Request, res: Response) => {
-    res.json({
-      activeSessions: Array.from(activeSessions.keys()),
-      count: activeSessions.size,
-    });
-  });
+  return app;
+}
 
-  // Start the server
-  app.listen(port, host, () => {
-    console.error(`Infomaniak MCP Server running on http://${host}:${port}/mcp`);
-    console.error(`Mode: ${stateless ? "stateless" : "stateful"}`);
-    console.error(`Health check: http://${host}:${port}/health`);
+/**
+ * Start the MCP server with HTTP transport.
+ *
+ * @param createServer - Builds a configured MCP server for each session
+ * @param options - HTTP server configuration options
+ */
+export async function startHttpServer(createServer: () => Server, options: HttpServerOptions = {}): Promise<void> {
+  const port = options.port ?? 3000;
+  const host = options.host ?? "0.0.0.0";
+  const app = createHttpApp(createServer, options);
+
+  if (!options.authToken) {
+    console.error("Warning: MCP_ALLOW_NO_AUTH=true, /mcp accepts requests without authentication");
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const listener = app.listen(port, host, () => resolve());
+    listener.on("error", reject);
   });
+  console.error(`Infomaniak MCP Server running on http://${host}:${port}/mcp`);
+  console.error(`Mode: ${options.stateless ? "stateless" : "stateful"}`);
 }
