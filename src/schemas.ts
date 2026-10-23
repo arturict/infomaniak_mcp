@@ -338,6 +338,113 @@ export const ListMailboxFoldersSchema = z.object({
   mailbox_id: z.number().positive(),
 });
 
+// Infomaniak Mail (user-side message API)
+const MailboxSelector = z.string().min(1).optional();
+const FolderSelector = z.string().min(1);
+const MessageIds = z.array(z.string().min(1)).min(1, 'message_ids must not be empty').max(100);
+const DraftAttachment = z.object({
+  filename: z.string().min(1).max(255),
+  content_base64: z.string().min(1),
+  mime_type: z.string().min(1).optional(),
+});
+
+export const MailMailboxSchema = z.object({ mailbox: MailboxSelector });
+
+export const MailListEmailsSchema = z.object({
+  mailbox: MailboxSelector,
+  folder: FolderSelector.optional(),
+  limit: z.number().int().min(1).max(100).default(20),
+  offset: z.number().int().min(0).default(0),
+  unseen: z.boolean().optional(),
+  flagged: z.boolean().optional(),
+});
+
+const IsoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'use YYYY-MM-DD');
+
+export const MailSearchEmailsSchema = z.object({
+  mailbox: MailboxSelector,
+  query: z.string().min(1).optional(),
+  from: z.string().min(1).optional(),
+  to: z.string().min(1).optional(),
+  subject: z.string().min(1).optional(),
+  since: IsoDate.optional(),
+  before: IsoDate.optional(),
+  folder: FolderSelector.optional(),
+  limit: z.number().int().min(1).max(100).default(20),
+  offset: z.number().int().min(0).default(0),
+});
+
+export const MailReadEmailSchema = z.object({
+  mailbox: MailboxSelector,
+  folder: FolderSelector,
+  message_id: z.string().min(1),
+  format: z.enum(['text', 'html']).default('text'),
+  max_chars: z.number().int().min(100).max(200_000).default(20_000),
+});
+
+export const MailDownloadAttachmentSchema = z.object({
+  mailbox: MailboxSelector,
+  folder: FolderSelector,
+  message_id: z.string().min(1),
+  attachment_id: z.string().min(1),
+});
+
+export const MailCreateDraftSchema = z.object({
+  mailbox: MailboxSelector,
+  to: z.string().min(1),
+  subject: z.string(),
+  body: z.string(),
+  cc: z.string().optional(),
+  bcc: z.string().optional(),
+  in_reply_to_uid: z.string().min(3).optional(),
+  in_reply_to: z.string().optional(),
+  references: z.string().optional(),
+  from_email: z.string().optional(),
+  from_name: z.string().optional(),
+  attachments: z.array(DraftAttachment).max(10).optional(),
+});
+
+export const MailUpdateDraftSchema = z.object({
+  mailbox: MailboxSelector,
+  draft_uuid: z.string().min(1),
+  to: z.string().optional(),
+  subject: z.string().optional(),
+  body: z.string().optional(),
+  cc: z.string().optional(),
+  bcc: z.string().optional(),
+  attachments: z.array(DraftAttachment).max(10).optional(),
+});
+
+export const MailDraftIdSchema = z.object({
+  mailbox: MailboxSelector,
+  draft_uuid: z.string().min(1),
+});
+
+export const MailSendDraftSchema = MailDraftIdSchema.extend({
+  delay_seconds: z.number().int().min(0).max(7 * 24 * 3600).default(0),
+});
+
+export const MailMoveEmailsSchema = z.object({
+  mailbox: MailboxSelector,
+  folder: FolderSelector,
+  message_ids: MessageIds,
+  destination_folder: FolderSelector,
+});
+
+export const MailMarkSeenSchema = z.object({
+  mailbox: MailboxSelector,
+  folder: FolderSelector,
+  message_ids: MessageIds,
+  seen: z.boolean(),
+});
+
+export const MailFlagSchema = z.object({
+  mailbox: MailboxSelector,
+  folder: FolderSelector,
+  message_ids: MessageIds,
+  flagged: z.boolean(),
+});
+
 // kChat schemas
 export const KChatTeamIdSchema = z.object({
   team_id: z.string({ required_error: 'team_id is required' }).min(1),

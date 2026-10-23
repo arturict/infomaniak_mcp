@@ -12,9 +12,7 @@ import cors from "cors";
 import { randomUUID } from "crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import { InfomaniakClient } from "../infomaniak-client.js";
-import { KChatClient } from "../kchat-client.js";
-import { createMcpServer } from "../server.js";
+import { createMcpServer, type ServerDeps } from "../server.js";
 
 export interface HttpServerOptions {
   /** Port to listen on (default: 3000) */
@@ -33,14 +31,12 @@ const activeSessions = new Map<string, StreamableHTTPServerTransport>();
 /**
  * Start the MCP server with HTTP transport
  *
- * @param client - The Infomaniak API client
+ * @param deps - API clients used by the tools
  * @param options - HTTP server configuration options
- * @param kchatClient - Optional kChat API client
  */
 export async function startHttpServer(
-  client: InfomaniakClient,
+  deps: ServerDeps,
   options: HttpServerOptions = {},
-  kchatClient?: KChatClient | null,
 ): Promise<void> {
   const port = options.port ?? 3000;
   const host = options.host ?? "0.0.0.0";
@@ -83,7 +79,7 @@ export async function startHttpServer(
       });
 
       // Create and connect the MCP server for this session
-      const server = createMcpServer(client, kchatClient);
+      const server = createMcpServer(deps);
       await server.connect(transport);
 
       // Store session immediately if stateful mode (before handleRequest)

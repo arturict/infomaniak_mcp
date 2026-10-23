@@ -14,6 +14,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { InfomaniakClient, KDRIVE_ROOT_ID } from "./infomaniak-client.js";
 import { KChatClient } from "./kchat-client.js";
+import { MailClient } from "./mail-client.js";
+import { mailTools, handleMailToolCall } from "./mail-tools.js";
 import {
   ToolContent,
   MAX_BINARY_BYTES,
@@ -1288,20 +1290,31 @@ export const tools: Tool[] = [
       required: [],
     },
   },
+  ...mailTools,
 ];
+
+/** API clients the tools call. One set per process, shared by all sessions. */
+export interface ServerDeps {
+  client: InfomaniakClient;
+  mailClient: MailClient;
+  kchatClient?: KChatClient | null;
+}
 
 /**
  * Handle a tool call and return the result
  */
 async function handleToolCall(
-  client: InfomaniakClient,
+  deps: ServerDeps,
   name: string,
   args: Record<string, unknown> | undefined,
-  kchatClient?: KChatClient | null,
 ): Promise<unknown> {
+  const { client, kchatClient } = deps;
   if (name.startsWith("infomaniak_kchat_")) {
     if (!kchatClient) throw new Error("kChat is not configured. Set KCHAT_HOST and KCHAT_TOKEN environment variables.");
     return handleKChatToolCall(kchatClient, name, args);
+  }
+  if (name.startsWith("infomaniak_mail_")) {
+    return handleMailToolCall(deps.mailClient, name, args);
   }
   switch (name) {
     // Profile & Account (no validation needed - no args)
@@ -1879,10 +1892,10 @@ async function handleKChatToolCall(
 /**
  * Create and configure an MCP server instance
  *
- * @param client - The Infomaniak API client to use for tool calls
+ * @param deps - API clients used by the tools
  * @returns Configured MCP Server instance
  */
-export function createMcpServer(client: InfomaniakClient, kchatClient?: KChatClient | null): Server {
+export function createMcpServer(deps: ServerDeps): Server {
   const server = new Server(
     {
       name: "infomaniak-mcp-server",
@@ -1905,7 +1918,7 @@ export function createMcpServer(client: InfomaniakClient, kchatClient?: KChatCli
     const { name, arguments: args } = request.params;
 
     try {
-      const result = await handleToolCall(client, name, args, kchatClient);
+      const result = await handleToolCall(deps, name, args);
       if (result instanceof ToolContent) return { content: result.content };
 
       const content: TextContent[] = [

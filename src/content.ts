@@ -50,6 +50,34 @@ const TEXT_EXTENSIONS = new Set([
   "sh", "sql", "ini", "toml", "conf", "cfg", "log", "env", "ics", "vcf", "svg", "tex",
 ]);
 
+const MIME_BY_EXTENSION: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+  pdf: "application/pdf",
+  txt: "text/plain",
+  md: "text/markdown",
+  html: "text/html",
+  ics: "text/calendar",
+  csv: "text/csv",
+  json: "application/json",
+  xml: "application/xml",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  zip: "application/zip",
+};
+
+export function mimeTypeFromFilename(filename: string): string {
+  const ext = filename.includes(".") ? filename.split(".").pop()!.toLowerCase() : "";
+  return MIME_BY_EXTENSION[ext] ?? "application/octet-stream";
+}
+
 /** MIME types are case-insensitive (RFC 2045) and may carry parameters. */
 export function normaliseMimeType(mimeType: string | null | undefined): string {
   const base = (mimeType ?? "").split(";")[0].trim().toLowerCase();

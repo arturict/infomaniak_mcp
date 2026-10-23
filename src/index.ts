@@ -17,6 +17,7 @@
 
 import { InfomaniakClient } from "./infomaniak-client.js";
 import { KChatClient } from "./kchat-client.js";
+import { MailClient } from "./mail-client.js";
 import { startStdioServer } from "./transports/stdio.js";
 import { startHttpServer } from "./transports/http.js";
 
@@ -39,6 +40,12 @@ const kchatClient = (kchatHost && kchatToken)
   ? new KChatClient({ host: kchatHost, token: kchatToken })
   : null;
 
+// Mail client (user-side mail API). Created once so its draft cache is shared
+// by every HTTP session; it contacts the API only when a mail tool runs.
+const mailClient = new MailClient(API_TOKEN, { defaultMailbox: process.env.INFOMANIAK_MAIL_MAILBOX });
+
+const deps = { client, mailClient, kchatClient };
+
 // Get transport configuration from environment
 const transport = process.env.MCP_TRANSPORT || "stdio";
 const port = parseInt(process.env.PORT || process.env.MCP_PORT || "3000", 10);
@@ -47,9 +54,9 @@ const stateless = process.env.MCP_STATELESS === "true";
 // Start the server with the selected transport
 async function main() {
   if (transport === "http") {
-    await startHttpServer(client, { port, stateless }, kchatClient);
+    await startHttpServer(deps, { port, stateless });
   } else if (transport === "stdio") {
-    await startStdioServer(client, kchatClient);
+    await startStdioServer(deps);
   } else {
     console.error(`Error: Unknown transport '${transport}'. Use 'stdio' or 'http'.`);
     process.exit(1);
