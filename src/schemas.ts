@@ -239,11 +239,17 @@ export const KDriveFileIdSchema = z.object({
 export const ListKDriveFilesSchema = z.object({
   drive_id: z.number().positive(),
   parent_id: z.number().positive().optional(),
+  cursor: z.string().min(1).optional(),
+  limit: z.number().int().min(1).max(1000).optional(),
+  type: z.enum(['file', 'dir']).optional(),
 });
 
 export const SearchKDriveFilesSchema = z.object({
   drive_id: z.number().positive(),
   query: z.string({ required_error: 'query is required' }).min(1),
+  directory_id: z.number().positive().optional(),
+  depth: z.enum(['unlimited', 'child']).optional(),
+  limit: z.number().int().min(1).max(1000).optional(),
 });
 
 export const CreateKDriveDirectorySchema = z.object({

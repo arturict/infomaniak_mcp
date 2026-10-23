@@ -25,6 +25,9 @@ export interface PaginationOptions {
 export interface ApiResponse<T = unknown> {
   result: string;
   data: T;
+  /** Cursor-paginated (v3) endpoints: pass `cursor` back to get the next page. */
+  cursor?: string;
+  has_more?: boolean;
   error?: {
     code: string;
     description: string;
@@ -682,16 +685,33 @@ export class InfomaniakClient {
   // Endpoint paths for listing, search, directories, moves, links, trash,
   // versions and activities follow Infomaniak's official kDrive MCP server
   // (github.com/Infomaniak/mcp-server-kdrive). The root directory has id 1.
-  async listKDriveFiles(driveId: number, parentId: number = KDRIVE_ROOT_ID): Promise<ApiResponse<KDriveFile[]>> {
-    return this.request<ApiResponse<KDriveFile[]>>('GET', `/3/drive/${driveId}/files/${parentId}/files`);
+  async listKDriveFiles(
+    driveId: number,
+    parentId: number = KDRIVE_ROOT_ID,
+    options: { cursor?: string; limit?: number; type?: 'file' | 'dir' } = {},
+  ): Promise<ApiResponse<KDriveFile[]>> {
+    return this.request<ApiResponse<KDriveFile[]>>('GET', `/3/drive/${driveId}/files/${parentId}/files`, undefined, {
+      cursor: options.cursor,
+      limit: options.limit,
+      'type[]': options.type,
+    });
   }
 
   async getKDriveFile(driveId: number, fileId: number): Promise<ApiResponse<KDriveFile>> {
     return this.request<ApiResponse<KDriveFile>>('GET', `/2/drive/${driveId}/files/${fileId}`);
   }
 
-  async searchKDriveFiles(driveId: number, query: string): Promise<ApiResponse<KDriveFile[]>> {
-    return this.request<ApiResponse<KDriveFile[]>>('GET', `/3/drive/${driveId}/files/search`, undefined, { query });
+  async searchKDriveFiles(
+    driveId: number,
+    query: string,
+    options: { directoryId?: number; depth?: 'unlimited' | 'child'; limit?: number } = {},
+  ): Promise<ApiResponse<KDriveFile[]>> {
+    return this.request<ApiResponse<KDriveFile[]>>('GET', `/3/drive/${driveId}/files/search`, undefined, {
+      query,
+      directory_id: options.directoryId,
+      depth: options.depth,
+      limit: options.limit,
+    });
   }
 
   async createKDriveDirectory(driveId: number, directory: { name: string; parent_id?: number }): Promise<ApiResponse<KDriveFile>> {

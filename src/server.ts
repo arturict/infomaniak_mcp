@@ -803,8 +803,18 @@ export const tools: Tool[] = [
 
   {
     name: "infomaniak_list_kdrive_files",
-    description: "List files in a kDrive directory",
-    inputSchema: { type: "object", properties: { drive_id: { type: "number" }, parent_id: { type: "number", description: "Parent directory ID (omit for the root directory, id 1)" } }, required: ["drive_id"] },
+    description: "List files in a kDrive directory. When the result has has_more=true, call again with its cursor for the next page.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        drive_id: { type: "number" },
+        parent_id: { type: "number", description: "Parent directory ID (omit for the root directory, id 1)" },
+        cursor: { type: "string", description: "Cursor from the previous page" },
+        limit: { type: "number", description: "Max entries per page" },
+        type: { type: "string", enum: ["file", "dir"], description: "Only files or only directories" },
+      },
+      required: ["drive_id"],
+    },
   },
   {
     name: "infomaniak_get_kdrive_file",
@@ -813,8 +823,18 @@ export const tools: Tool[] = [
   },
   {
     name: "infomaniak_search_kdrive_files",
-    description: "Search for files in a kDrive",
-    inputSchema: { type: "object", properties: { drive_id: { type: "number" }, query: { type: "string" } }, required: ["drive_id", "query"] },
+    description: "Search for files in a kDrive, optionally within one directory",
+    inputSchema: {
+      type: "object",
+      properties: {
+        drive_id: { type: "number" },
+        query: { type: "string" },
+        directory_id: { type: "number", description: "Only search inside this directory" },
+        depth: { type: "string", enum: ["unlimited", "child"], description: "With directory_id: whole subtree (unlimited) or direct children (child)" },
+        limit: { type: "number", description: "Max results" },
+      },
+      required: ["drive_id", "query"],
+    },
   },
   {
     name: "infomaniak_create_kdrive_directory",
@@ -1626,7 +1646,11 @@ async function handleToolCall(
 
     case "infomaniak_list_kdrive_files": {
       const validated = validate(ListKDriveFilesSchema, args);
-      return client.listKDriveFiles(validated.drive_id, validated.parent_id);
+      return client.listKDriveFiles(validated.drive_id, validated.parent_id, {
+        cursor: validated.cursor,
+        limit: validated.limit,
+        type: validated.type,
+      });
     }
     case "infomaniak_get_kdrive_file": {
       const validated = validate(KDriveFileIdSchema, args);
@@ -1634,7 +1658,11 @@ async function handleToolCall(
     }
     case "infomaniak_search_kdrive_files": {
       const validated = validate(SearchKDriveFilesSchema, args);
-      return client.searchKDriveFiles(validated.drive_id, validated.query);
+      return client.searchKDriveFiles(validated.drive_id, validated.query, {
+        directoryId: validated.directory_id,
+        depth: validated.depth,
+        limit: validated.limit,
+      });
     }
     case "infomaniak_create_kdrive_directory": {
       const validated = validate(CreateKDriveDirectorySchema, args);

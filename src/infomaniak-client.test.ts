@@ -520,6 +520,15 @@ describe('InfomaniakClient', () => {
       );
     });
 
+    it('passes the pagination cursor and type filter when listing', async () => {
+      okJson();
+      await client.listKDriveFiles(42, 7, { cursor: 'abc', type: 'file' });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.infomaniak.com/3/drive/42/files/7/files?cursor=abc&type%5B%5D=file',
+        expect.objectContaining({ method: 'GET' })
+      );
+    });
+
     it('creates a directory under its parent', async () => {
       okJson();
       await client.createKDriveDirectory(42, { name: 'Clients', parent_id: 7 });
