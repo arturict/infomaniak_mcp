@@ -151,4 +151,16 @@ describe("draftPayloadFromApi", () => {
     }, "d-9");
     expect(payload).toMatchObject({ uuid: "d-9", attachments: ["att-1"], to: [{ name: "", email: "b@example.com" }] });
   });
+
+  it("takes the sender from the resolved identity when the draft has no from field", () => {
+    // Shape returned by GET /mail/{mailbox}/draft/{uuid} (observed 2026-10-23).
+    const data = { subject: "Hi", body: "<p>x</p>", identity_id: "42", to: [{ email: "b@example.com", name: "" }], cc: [], bcc: [], attachments: [] };
+    expect(draftPayloadFromApi(data, "d-1")).toBeNull();
+    expect(draftPayloadFromApi(data, "d-1", { name: "A", email: "a@example.com" })).toMatchObject({
+      from: { email: "a@example.com" },
+      identity_id: "42",
+      cc: null,
+      bcc: null,
+    });
+  });
 });

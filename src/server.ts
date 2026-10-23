@@ -2001,7 +2001,8 @@ export function createMcpServer(deps: ServerDeps, options: ServerOptions): Serve
       const content: TextContent[] = [
         {
           type: "text",
-          text: JSON.stringify(result, null, 2),
+          // Compact JSON: pretty-printing large listings (DNS zones, mail threads) costs ~40% more context.
+          text: JSON.stringify(result),
         },
       ];
 

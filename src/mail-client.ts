@@ -314,10 +314,15 @@ function narrowRecipients(value: unknown): Recipient[] | null | undefined {
     if (!isRecord(item) || typeof item.email !== "string") return undefined;
     out.push({ name: str(item.name) ?? "", email: item.email });
   }
-  return out;
+  // The save endpoint rejects empty recipient lists (min 1 item); no recipients is null.
+  return out.length > 0 ? out : null;
 }
 
-export function draftPayloadFromApi(data: unknown, draftUuid: string): DraftPayload | null {
+/**
+ * `fallbackFrom` is used when the draft has no `from` field: the draft GET
+ * endpoint returns only `identity_id`, so the caller resolves the sender.
+ */
+export function draftPayloadFromApi(data: unknown, draftUuid: string, fallbackFrom?: Recipient): DraftPayload | null {
   if (!isRecord(data)) return null;
   const body = typeof data.body === "string" ? data.body : extractBody(data.body)?.value;
   const subject = data.subject === null ? "" : str(data.subject);
@@ -325,7 +330,7 @@ export function draftPayloadFromApi(data: unknown, draftUuid: string): DraftPayl
   const cc = narrowRecipients(data.cc);
   const bcc = narrowRecipients(data.bcc);
   const fromList = narrowRecipients(Array.isArray(data.from) ? data.from : data.from ? [data.from] : null);
-  const from = fromList?.[0];
+  const from = fromList?.[0] ?? fallbackFrom;
   if (body === undefined || subject === undefined || to === undefined || cc === undefined || bcc === undefined || !from) {
     return null;
   }
@@ -769,6 +774,16 @@ export class MailClient {
     }
   }
 
+  /** Sender of a fetched draft from its identity_id; undefined if it cannot be resolved. */
+  private async draftSender(mailboxUuid: string, data: unknown): Promise<Recipient | undefined> {
+    if (!isRecord(data) || data.identity_id === null || data.identity_id === undefined) return undefined;
+    const mailbox = await this.resolveMailbox(mailboxUuid);
+    const identity = (await this.getIdentities(mailbox)).find((s) => String(s.id) === String(data.identity_id));
+    const email = identity ? str(identity.sender) : undefined;
+    if (!identity || !email) return undefined;
+    return { name: str(identity.full_name) ?? "", email };
+  }
+
   /**
    * Draft state to build the next save from: the copy saved by this process,
    * or the draft fetched from the API when every needed field can be read.
@@ -778,7 +793,7 @@ export class MailClient {
     const cached = this.draftsCache.get(draftUuid);
     if (cached) return { ...cached };
     const data = await this.apiRequest(`/mail/${encodeURIComponent(mailboxUuid)}/draft/${encodeURIComponent(draftUuid)}`);
-    const payload = draftPayloadFromApi(data, draftUuid);
+    const payload = draftPayloadFromApi(data, draftUuid, await this.draftSender(mailboxUuid, data));
     if (!payload) {
       throw new Error(
         `Draft ${draftUuid} was not created by this server process and could not be read safely. Delete it and create a new draft instead.`,
