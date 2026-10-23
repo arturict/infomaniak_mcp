@@ -6,11 +6,12 @@
  * A Model Context Protocol server that provides tools for interacting
  * with the Infomaniak API - managing domains, email, hosting, kDrive, and more.
  *
- * Environment Variables:
+ * Main environment variables (full list in README.md):
  * - INFOMANIAK_API_TOKEN: Your Infomaniak API token (required)
+ * - INFOMANIAK_TOOLSETS, INFOMANIAK_ALLOW_WRITES, INFOMANIAK_ALLOW_DANGEROUS,
+ *   INFOMANIAK_ENABLE_MAIL_SEND: which tools are listed and callable
  * - MCP_TRANSPORT: Transport mode - 'stdio' (default) or 'http'
- * - MCP_PORT: HTTP port when using http transport (default: 3000)
- * - MCP_STATELESS: Set to 'true' for stateless mode (default: false)
+ * - MCP_AUTH_TOKEN: Bearer token required on /mcp in http mode
  *
  * Get your API token from: https://manager.infomaniak.com/v3/ng/accounts/token/list
  */
@@ -21,7 +22,7 @@ import { MailClient } from "./mail-client.js";
 import { createMcpServer } from "./server.js";
 import { policyFromEnv, type ToolPolicy } from "./tool-policy.js";
 import { startStdioServer } from "./transports/stdio.js";
-import { startHttpServer } from "./transports/http.js";
+import { parseCorsOrigins, startHttpServer } from "./transports/http.js";
 
 // Get API token from environment
 const API_TOKEN = process.env.INFOMANIAK_API_TOKEN;
@@ -77,7 +78,14 @@ const stateless = process.env.MCP_STATELESS === "true";
 // Start the server with the selected transport
 async function main() {
   if (transport === "http") {
-    await startHttpServer(createServer, { port, stateless });
+    await startHttpServer(createServer, {
+      port,
+      stateless,
+      host: process.env.MCP_HOST || undefined,
+      authToken: process.env.MCP_AUTH_TOKEN || undefined,
+      allowNoAuth: process.env.MCP_ALLOW_NO_AUTH === "true",
+      corsOrigins: parseCorsOrigins(process.env.MCP_CORS_ORIGINS),
+    });
   } else if (transport === "stdio") {
     await startStdioServer(createServer);
   } else {

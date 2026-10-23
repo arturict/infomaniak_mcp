@@ -1,271 +1,145 @@
 /**
- * Tests for HTTP Transport Module
+ * Tests for the HTTP transport against the real Express app and MCP server.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import express, { Express } from "express";
+import { describe, it, expect } from "vitest";
 import request from "supertest";
+import { createHttpApp, parseCorsOrigins, type HttpServerOptions } from "./http.js";
+import { createMcpServer } from "../server.js";
 import { InfomaniakClient } from "../infomaniak-client.js";
+import { MailClient } from "../mail-client.js";
+import { policyFromEnv } from "../tool-policy.js";
 
-// Mock the MCP SDK modules
-vi.mock("@modelcontextprotocol/sdk/server/streamableHttp.js", () => ({
-  StreamableHTTPServerTransport: vi.fn().mockImplementation(() => ({
-    sessionId: "test-session-123",
-    handleRequest: vi.fn().mockImplementation(async (_req, res) => {
-      res.json({ jsonrpc: "2.0", result: { tools: [] }, id: 1 });
-    }),
-    close: vi.fn(),
-    onclose: null,
-  })),
-}));
+const TOKEN = "test-secret-token";
+const ACCEPT = "application/json, text/event-stream";
 
-vi.mock("@modelcontextprotocol/sdk/server/index.js", () => ({
-  Server: vi.fn().mockImplementation(() => ({
-    connect: vi.fn().mockResolvedValue(undefined),
-    setRequestHandler: vi.fn(),
-  })),
-}));
+const initialize = {
+  jsonrpc: "2.0",
+  id: 1,
+  method: "initialize",
+  params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "test", version: "1.0.0" } },
+};
 
-vi.mock("@modelcontextprotocol/sdk/types.js", () => ({
-  CallToolRequestSchema: {},
-  ListToolsRequestSchema: {},
-  isInitializeRequest: vi.fn().mockImplementation((body) => {
-    return body?.method === "initialize";
-  }),
-}));
-
-// Create a test app that mirrors the HTTP transport setup
-function createTestApp(): Express {
-  const app = express();
-  app.use(express.json());
-
-  const activeSessions = new Map<string, { close: () => void }>();
-
-  // Health check endpoint
-  app.get("/health", (_req, res) => {
-    res.json({ status: "ok", transport: "http", stateless: false });
-  });
-
-  // MCP POST endpoint
-  app.post("/mcp", async (req, res) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-
-    if (sessionId && activeSessions.has(sessionId)) {
-      res.json({ jsonrpc: "2.0", result: { tools: [] }, id: 1 });
-    } else if (!sessionId && req.body?.method === "initialize") {
-      const newSessionId = "test-session-" + Date.now();
-      activeSessions.set(newSessionId, { close: () => {} });
-      res.setHeader("mcp-session-id", newSessionId);
-      res.json({ jsonrpc: "2.0", result: { protocolVersion: "2025-03-26" }, id: 1 });
-    } else {
-      res.status(400).json({
-        jsonrpc: "2.0",
-        error: {
-          code: -32600,
-          message: "Invalid request: No session ID provided and not an initialization request",
-        },
-        id: null,
-      });
-    }
-  });
-
-  // MCP GET endpoint (SSE)
-  app.get("/mcp", (req, res) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-
-    if (!sessionId || !activeSessions.has(sessionId)) {
-      res.status(400).json({
-        jsonrpc: "2.0",
-        error: { code: -32600, message: "Invalid request: Session not found" },
-        id: null,
-      });
-      return;
-    }
-
-    res.setHeader("Content-Type", "text/event-stream");
-    res.status(200).end();
-  });
-
-  // MCP DELETE endpoint
-  app.delete("/mcp", (req, res) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-
-    if (!sessionId) {
-      res.status(400).json({
-        jsonrpc: "2.0",
-        error: { code: -32600, message: "Invalid request: No session ID provided" },
-        id: null,
-      });
-      return;
-    }
-
-    if (activeSessions.has(sessionId)) {
-      activeSessions.delete(sessionId);
-      res.json({ message: "Session terminated" });
-    } else {
-      res.status(404).json({
-        jsonrpc: "2.0",
-        error: { code: -32600, message: "Session not found" },
-        id: null,
-      });
-    }
-  });
-
-  // Session management endpoint
-  app.get("/mcp/sessions", (_req, res) => {
-    res.json({
-      activeSessions: Array.from(activeSessions.keys()),
-      count: activeSessions.size,
-    });
-  });
-
-  return app;
+function app(options: HttpServerOptions = { authToken: TOKEN }) {
+  const createServer = () =>
+    createMcpServer(
+      { client: new InfomaniakClient({ token: "t" }), mailClient: new MailClient("t") },
+      { policy: policyFromEnv({}) },
+    );
+  return createHttpApp(createServer, options);
 }
 
-describe("HTTP Transport", () => {
-  let app: Express;
+/** Responses arrive as SSE; return the JSON of the first data line. */
+function sseJson(text: string): { result?: { tools?: { name: string }[] } } {
+  const line = text.split("\n").find((l) => l.startsWith("data: "));
+  if (!line) throw new Error(`No SSE data in: ${text}`);
+  return JSON.parse(line.slice(6));
+}
 
-  beforeEach(() => {
-    app = createTestApp();
-  });
-
-  afterEach(() => {
-    vi.clearAllMocks();
-  });
-
-  describe("Health endpoint", () => {
-    it("should return health status", async () => {
-      const response = await request(app).get("/health");
-
-      expect(response.status).toBe(200);
-      expect(response.body).toEqual({
-        status: "ok",
-        transport: "http",
-        stateless: false,
-      });
-    });
-  });
-
-  describe("MCP POST endpoint", () => {
-    it("should handle initialization request without session ID", async () => {
-      const response = await request(app)
-        .post("/mcp")
-        .send({ jsonrpc: "2.0", method: "initialize", id: 1 });
-
-      expect(response.status).toBe(200);
-      expect(response.headers["mcp-session-id"]).toBeDefined();
-      expect(response.body.result.protocolVersion).toBe("2025-03-26");
-    });
-
-    it("should reject non-initialization request without session ID", async () => {
-      const response = await request(app)
-        .post("/mcp")
-        .send({ jsonrpc: "2.0", method: "tools/list", id: 1 });
-
-      expect(response.status).toBe(400);
-      expect(response.body.error.code).toBe(-32600);
-    });
-
-    it("should use Mcp-Session-Id header (per MCP spec)", async () => {
-      // First, initialize to get a session
-      const initResponse = await request(app)
-        .post("/mcp")
-        .send({ jsonrpc: "2.0", method: "initialize", id: 1 });
-
-      const sessionId = initResponse.headers["mcp-session-id"];
-      expect(sessionId).toBeDefined();
-
-      // Then use the session
-      const response = await request(app)
-        .post("/mcp")
-        .set("mcp-session-id", sessionId)
-        .send({ jsonrpc: "2.0", method: "tools/list", id: 2 });
-
-      expect(response.status).toBe(200);
-    });
-  });
-
-  describe("MCP GET endpoint (SSE)", () => {
-    it("should reject GET without session ID", async () => {
-      const response = await request(app).get("/mcp");
-
-      expect(response.status).toBe(400);
-      expect(response.body.error.message).toContain("Session not found");
-    });
-
-    it("should reject GET with invalid session ID", async () => {
-      const response = await request(app)
-        .get("/mcp")
-        .set("mcp-session-id", "invalid-session");
-
-      expect(response.status).toBe(400);
-    });
-  });
-
-  describe("MCP DELETE endpoint", () => {
-    it("should reject DELETE without session ID", async () => {
-      const response = await request(app).delete("/mcp");
-
-      expect(response.status).toBe(400);
-      expect(response.body.error.message).toContain("No session ID provided");
-    });
-
-    it("should return 404 for non-existent session", async () => {
-      const response = await request(app)
-        .delete("/mcp")
-        .set("mcp-session-id", "non-existent");
-
-      expect(response.status).toBe(404);
-    });
-
-    it("should terminate existing session", async () => {
-      // First, initialize to create a session
-      const initResponse = await request(app)
-        .post("/mcp")
-        .send({ jsonrpc: "2.0", method: "initialize", id: 1 });
-
-      const sessionId = initResponse.headers["mcp-session-id"];
-
-      // Then terminate it
-      const response = await request(app)
-        .delete("/mcp")
-        .set("mcp-session-id", sessionId);
-
-      expect(response.status).toBe(200);
-      expect(response.body.message).toBe("Session terminated");
-    });
-  });
-
-  describe("Session management", () => {
-    it("should return empty sessions initially", async () => {
-      const response = await request(app).get("/mcp/sessions");
-
-      expect(response.status).toBe(200);
-      expect(response.body.count).toBe(0);
-    });
-
-    it("should track active sessions", async () => {
-      // Create a session
-      await request(app)
-        .post("/mcp")
-        .send({ jsonrpc: "2.0", method: "initialize", id: 1 });
-
-      const response = await request(app).get("/mcp/sessions");
-
-      expect(response.status).toBe(200);
-      expect(response.body.count).toBe(1);
-    });
+describe("startup", () => {
+  it("refuses to build without a token unless no-auth is explicitly allowed", () => {
+    expect(() => app({})).toThrow(/MCP_AUTH_TOKEN/);
+    expect(() => app({ allowNoAuth: true })).not.toThrow();
   });
 });
 
-describe("InfomaniakClient integration", () => {
-  it("should accept InfomaniakClient instance", () => {
-    const mockClient = {
-      ping: vi.fn(),
-      getProfile: vi.fn(),
-    } as unknown as InfomaniakClient;
+describe("/health", () => {
+  it("answers without authentication and reveals no configuration", async () => {
+    const res = await request(app()).get("/health");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: "ok" });
+  });
+});
 
-    expect(mockClient).toBeDefined();
-    expect(typeof mockClient.ping).toBe("function");
+describe("bearer authentication", () => {
+  it("rejects /mcp without or with a wrong token", async () => {
+    const a = app();
+    expect((await request(a).post("/mcp").set("Accept", ACCEPT).send(initialize)).status).toBe(401);
+    expect((await request(a).post("/mcp").set("Authorization", "Bearer nope").send(initialize)).status).toBe(401);
+    expect((await request(a).get("/mcp")).status).toBe(401);
+    expect((await request(a).delete("/mcp")).status).toBe(401);
+  });
+
+  it("no longer exposes a session listing", async () => {
+    const res = await request(app()).get("/mcp/sessions").set("Authorization", `Bearer ${TOKEN}`);
+    expect(res.status).not.toBe(200);
+  });
+
+  it("initializes and lists tools with the right token", async () => {
+    const a = app();
+    const init = await request(a)
+      .post("/mcp")
+      .set("Authorization", `Bearer ${TOKEN}`)
+      .set("Accept", ACCEPT)
+      .send(initialize);
+    expect(init.status).toBe(200);
+    const sessionId = init.headers["mcp-session-id"];
+    expect(sessionId).toBeTruthy();
+
+    await request(a)
+      .post("/mcp")
+      .set("Authorization", `Bearer ${TOKEN}`)
+      .set("Accept", ACCEPT)
+      .set("Mcp-Session-Id", sessionId)
+      .send({ jsonrpc: "2.0", method: "notifications/initialized" });
+
+    const list = await request(a)
+      .post("/mcp")
+      .set("Authorization", `Bearer ${TOKEN}`)
+      .set("Accept", ACCEPT)
+      .set("Mcp-Session-Id", sessionId)
+      .send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+    expect(list.status).toBe(200);
+    const names = sseJson(list.text).result?.tools?.map((t) => t.name) ?? [];
+    expect(names).toContain("infomaniak_mail_list_emails");
+    expect(names).not.toContain("infomaniak_renew_domain");
+  });
+
+  it("returns 404 for an unknown session", async () => {
+    const res = await request(app())
+      .post("/mcp")
+      .set("Authorization", `Bearer ${TOKEN}`)
+      .set("Accept", ACCEPT)
+      .set("Mcp-Session-Id", "unknown")
+      .send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("CORS", () => {
+  it("sends no CORS headers by default", async () => {
+    const res = await request(app()).options("/mcp").set("Origin", "https://app.example.com");
+    expect(res.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+
+  it("answers preflights for configured origins without requiring the token", async () => {
+    const res = await request(app({ authToken: TOKEN, corsOrigins: ["https://app.example.com"] }))
+      .options("/mcp")
+      .set("Origin", "https://app.example.com")
+      .set("Access-Control-Request-Method", "POST")
+      .set("Access-Control-Request-Headers", "authorization,content-type");
+    expect(res.status).toBe(204);
+    expect(res.headers["access-control-allow-origin"]).toBe("https://app.example.com");
+    expect(res.headers["access-control-allow-headers"]).toMatch(/Authorization/);
+  });
+
+  it("parses MCP_CORS_ORIGINS", () => {
+    expect(parseCorsOrigins(undefined)).toEqual([]);
+    expect(parseCorsOrigins(" https://a.example.com, ,https://b.example.com")).toEqual([
+      "https://a.example.com",
+      "https://b.example.com",
+    ]);
+  });
+});
+
+describe("stateless mode", () => {
+  it("serves tools/list without a session", async () => {
+    const res = await request(app({ authToken: TOKEN, stateless: true }))
+      .post("/mcp")
+      .set("Authorization", `Bearer ${TOKEN}`)
+      .set("Accept", ACCEPT)
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    expect(res.status).toBe(200);
+    expect(sseJson(res.text).result?.tools?.length).toBeGreaterThan(0);
   });
 });
