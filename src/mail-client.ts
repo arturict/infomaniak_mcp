@@ -106,6 +106,7 @@ export interface ThreadMessageSummary {
   date: string | null;
   from: string;
   seen: boolean | null;
+  has_attachments: boolean;
 }
 
 export interface ThreadSummary {
@@ -272,6 +273,7 @@ function messageSummary(message: JsonRecord): ThreadMessageSummary {
     date: str(message.date) ?? null,
     from: formatAddresses(message.from),
     seen: bool(message.seen) ?? null,
+    has_attachments: bool(message.has_attachments) ?? false,
   };
 }
 
