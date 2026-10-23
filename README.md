@@ -60,6 +60,7 @@ npm run build
 | `INFOMANIAK_ALLOW_WRITES` | `false` | Enable tools that change data (DNS records, kDrive uploads, moves, renames, deletions to trash, ...) |
 | `INFOMANIAK_ALLOW_DANGEROUS` | `false` | Together with `INFOMANIAK_ALLOW_WRITES`, enable dangerous tools (see below) |
 | `INFOMANIAK_ENABLE_MAIL_SEND` | `false` | Enable `infomaniak_mail_send_draft` |
+| `INFOMANIAK_MAIL_TOKEN` | `INFOMANIAK_API_TOKEN` | Separate token for the mail tools, if the main token lacks `workspace:mail` |
 | `INFOMANIAK_MAIL_MAILBOX` | first mailbox | Default mailbox for mail tools, as email address or UUID |
 | `KDRIVE_ID` | - | Default kDrive ID; makes `drive_id` optional |
 | `KCHAT_HOST`, `KCHAT_TOKEN` | - | kChat host (e.g. `yourteam.kchat.infomaniak.com`) and token, for the `kchat` group |

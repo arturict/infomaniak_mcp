@@ -45,7 +45,10 @@ const kchatClient = (kchatHost && kchatToken)
 
 // Mail client (user-side mail API). Created once so its draft cache is shared
 // by every HTTP session; it contacts the API only when a mail tool runs.
-const mailClient = new MailClient(API_TOKEN, { defaultMailbox: process.env.INFOMANIAK_MAIL_MAILBOX });
+// INFOMANIAK_MAIL_TOKEN allows a separate token with the workspace:mail scope.
+const mailClient = new MailClient(process.env.INFOMANIAK_MAIL_TOKEN || API_TOKEN, {
+  defaultMailbox: process.env.INFOMANIAK_MAIL_MAILBOX,
+});
 
 const deps = { client, mailClient, kchatClient };
 
