@@ -502,4 +502,40 @@ describe('InfomaniakClient', () => {
       );
     });
   });
+
+  describe('kDrive endpoints', () => {
+    function okJson() {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ result: 'success', data: [] }),
+      });
+    }
+
+    it('lists the root directory (id 1) when no parent is given', async () => {
+      okJson();
+      await client.listKDriveFiles(42);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.infomaniak.com/3/drive/42/files/1/files',
+        expect.objectContaining({ method: 'GET' })
+      );
+    });
+
+    it('creates a directory under its parent', async () => {
+      okJson();
+      await client.createKDriveDirectory(42, { name: 'Clients', parent_id: 7 });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.infomaniak.com/3/drive/42/files/7/directory',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ name: 'Clients' }) })
+      );
+    });
+
+    it('moves a file with the destination in the path', async () => {
+      okJson();
+      await client.moveKDriveFile(42, 5, 9);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.infomaniak.com/3/drive/42/files/5/move/9',
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+  });
 });

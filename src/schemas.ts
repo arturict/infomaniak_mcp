@@ -279,6 +279,7 @@ export const KDriveTrashSchema = z.object({
 export const KDriveRestoreFileSchema = z.object({
   drive_id: z.number().positive(),
   file_id: z.number().positive(),
+  destination_directory_id: z.number().positive().optional(),
 });
 
 export const KDriveActivitySchema = z.object({

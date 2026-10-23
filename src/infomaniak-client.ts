@@ -271,6 +271,9 @@ export interface Product {
   customer_name: string;
 }
 
+/** kDrive's root directory always has file id 1. */
+export const KDRIVE_ROOT_ID = 1;
+
 class TokenBucket {
   private tokens: number;
   private lastRefill: number;
@@ -645,11 +648,11 @@ export class InfomaniakClient {
     return this.request<ApiResponse<KDrive>>('GET', `/2/drive/${driveId}`);
   }
 
-  async listKDriveFiles(driveId: number, parentId?: number): Promise<ApiResponse<KDriveFile[]>> {
-    const path = parentId
-      ? `/2/drive/${driveId}/files/${parentId}/files`
-      : `/2/drive/${driveId}/files`;
-    return this.request<ApiResponse<KDriveFile[]>>('GET', path);
+  // Endpoint paths for listing, search, directories, moves, links, trash,
+  // versions and activities follow Infomaniak's official kDrive MCP server
+  // (github.com/Infomaniak/mcp-server-kdrive). The root directory has id 1.
+  async listKDriveFiles(driveId: number, parentId: number = KDRIVE_ROOT_ID): Promise<ApiResponse<KDriveFile[]>> {
+    return this.request<ApiResponse<KDriveFile[]>>('GET', `/3/drive/${driveId}/files/${parentId}/files`);
   }
 
   async getKDriveFile(driveId: number, fileId: number): Promise<ApiResponse<KDriveFile>> {
@@ -657,15 +660,16 @@ export class InfomaniakClient {
   }
 
   async searchKDriveFiles(driveId: number, query: string): Promise<ApiResponse<KDriveFile[]>> {
-    return this.request<ApiResponse<KDriveFile[]>>('GET', `/2/drive/${driveId}/files/search`, undefined, { query });
+    return this.request<ApiResponse<KDriveFile[]>>('GET', `/3/drive/${driveId}/files/search`, undefined, { query });
   }
 
   async createKDriveDirectory(driveId: number, directory: { name: string; parent_id?: number }): Promise<ApiResponse<KDriveFile>> {
-    return this.request<ApiResponse<KDriveFile>>('POST', `/2/drive/${driveId}/files/directories`, directory);
+    const parentId = directory.parent_id ?? KDRIVE_ROOT_ID;
+    return this.request<ApiResponse<KDriveFile>>('POST', `/3/drive/${driveId}/files/${parentId}/directory`, { name: directory.name });
   }
 
   async moveKDriveFile(driveId: number, fileId: number, destinationDirectoryId: number): Promise<ApiResponse<KDriveFile>> {
-    return this.request<ApiResponse<KDriveFile>>('POST', `/2/drive/${driveId}/files/${fileId}/move`, { destination_directory_id: destinationDirectoryId });
+    return this.request<ApiResponse<KDriveFile>>('POST', `/3/drive/${driveId}/files/${fileId}/move/${destinationDirectoryId}`);
   }
 
   async copyKDriveFile(driveId: number, fileId: number, destinationDirectoryId: number): Promise<ApiResponse<KDriveFile>> {
@@ -681,28 +685,29 @@ export class InfomaniakClient {
   }
 
   async shareKDriveFile(driveId: number, fileId: number, options: { right?: string; valid_until?: string } = {}): Promise<ApiResponse<KDriveShareLink>> {
-    return this.request<ApiResponse<KDriveShareLink>>('POST', `/2/drive/${driveId}/files/${fileId}/shareable_link`, options);
+    return this.request<ApiResponse<KDriveShareLink>>('POST', `/2/drive/${driveId}/files/${fileId}/link`, options);
   }
 
   async listKDriveTrash(driveId: number): Promise<ApiResponse<KDriveFile[]>> {
-    return this.request<ApiResponse<KDriveFile[]>>('GET', `/2/drive/${driveId}/files/trash`);
+    return this.request<ApiResponse<KDriveFile[]>>('GET', `/3/drive/${driveId}/trash`);
   }
 
-  async restoreKDriveFile(driveId: number, fileId: number): Promise<ApiResponse<KDriveFile>> {
-    return this.request<ApiResponse<KDriveFile>>('POST', `/2/drive/${driveId}/files/trash/${fileId}/restore`);
+  async restoreKDriveFile(driveId: number, fileId: number, destinationDirectoryId?: number): Promise<ApiResponse<KDriveFile>> {
+    const body = destinationDirectoryId === undefined ? undefined : { destination_directory_id: destinationDirectoryId };
+    return this.request<ApiResponse<KDriveFile>>('POST', `/2/drive/${driveId}/trash/${fileId}/restore`, body);
   }
 
   async emptyKDriveTrash(driveId: number): Promise<ApiResponse<void>> {
-    return this.request<ApiResponse<void>>('DELETE', `/2/drive/${driveId}/files/trash`);
+    return this.request<ApiResponse<void>>('DELETE', `/2/drive/${driveId}/trash`);
   }
 
   async listKDriveFileVersions(driveId: number, fileId: number): Promise<ApiResponse<KDriveFileVersion[]>> {
-    return this.request<ApiResponse<KDriveFileVersion[]>>('GET', `/2/drive/${driveId}/files/${fileId}/versions`);
+    return this.request<ApiResponse<KDriveFileVersion[]>>('GET', `/3/drive/${driveId}/files/${fileId}/versions`);
   }
 
   async getKDriveActivity(driveId: number, fileId?: number): Promise<ApiResponse<KDriveActivity[]>> {
     const path = fileId
-      ? `/2/drive/${driveId}/files/${fileId}/activity`
+      ? `/3/drive/${driveId}/files/${fileId}/activities`
       : `/2/drive/${driveId}/activity`;
     return this.request<ApiResponse<KDriveActivity[]>>('GET', path);
   }

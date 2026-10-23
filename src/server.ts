@@ -65,6 +65,7 @@ import {
   KDriveTrashSchema,
   KDriveActivitySchema,
   KDriveFavoritesSchema,
+  KDriveRestoreFileSchema,
   UpdateMailboxAutoresponderSchema,
   KChatTeamIdSchema,
   KChatChannelIdSchema,
@@ -789,7 +790,7 @@ export const tools: Tool[] = [
   {
     name: "infomaniak_list_kdrive_files",
     description: "List files in a kDrive directory",
-    inputSchema: { type: "object", properties: { drive_id: { type: "number" }, parent_id: { type: "number", description: "Parent directory ID (omit for root)" } }, required: ["drive_id"] },
+    inputSchema: { type: "object", properties: { drive_id: { type: "number" }, parent_id: { type: "number", description: "Parent directory ID (omit for the root directory, id 1)" } }, required: ["drive_id"] },
   },
   {
     name: "infomaniak_get_kdrive_file",
@@ -1083,8 +1084,8 @@ export const tools: Tool[] = [
   },
   {
     name: "infomaniak_restore_kdrive_file",
-    description: "Restore a file from the kDrive trash",
-    inputSchema: { type: "object", properties: { drive_id: { type: "number" }, file_id: { type: "number" } }, required: ["drive_id", "file_id"] },
+    description: "Restore a file from the kDrive trash, optionally into another directory",
+    inputSchema: { type: "object", properties: { drive_id: { type: "number" }, file_id: { type: "number" }, destination_directory_id: { type: "number", description: "Optional: directory to restore into" } }, required: ["drive_id", "file_id"] },
   },
   {
     name: "infomaniak_empty_kdrive_trash",
@@ -1667,8 +1668,8 @@ async function handleToolCall(
     }
 
     case "infomaniak_restore_kdrive_file": {
-      const validated = validate(KDriveFileIdSchema, args);
-      return client.restoreKDriveFile(validated.drive_id, validated.file_id);
+      const validated = validate(KDriveRestoreFileSchema, args);
+      return client.restoreKDriveFile(validated.drive_id, validated.file_id, validated.destination_directory_id);
     }
 
     case "infomaniak_empty_kdrive_trash": {
