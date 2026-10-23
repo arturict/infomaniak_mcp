@@ -301,6 +301,27 @@ export const KDriveFileVersionsSchema = z.object({
   file_id: z.number().positive(),
 });
 
+export const DownloadKDriveFileSchema = z.object({
+  drive_id: z.number().positive(),
+  file_id: z.number().positive(),
+  max_chars: z.number().int().min(1).max(200_000).optional(),
+});
+
+export const UploadKDriveFileSchema = z.object({
+  drive_id: z.number().positive(),
+  directory_id: z.number().positive().optional(),
+  file_name: z.string({ required_error: 'file_name is required' })
+    .min(1)
+    .max(255)
+    .refine((name) => !name.includes('/'), 'file_name must not contain "/"'),
+  content_text: z.string().optional(),
+  content_base64: z.string().optional(),
+  conflict: z.enum(['error', 'rename', 'version']).default('rename'),
+}).refine(
+  (v) => (v.content_text === undefined) !== (v.content_base64 === undefined),
+  'Provide exactly one of content_text or content_base64',
+);
+
 // Mail extras
 export const UpdateMailboxAutoresponderSchema = z.object({
   mail_id: z.number().positive(),
@@ -362,7 +383,8 @@ export const KChatGetChannelPostsSchema = z.object({
 });
 
 // Helper function to validate and return typed result
-export function validate<T>(schema: z.ZodSchema<T>, data: unknown): T {
+// Typed on the schema so defaults and refinements produce the parsed output type.
+export function validate<S extends z.ZodTypeAny>(schema: S, data: unknown): z.output<S> {
   const result = schema.safeParse(data);
   if (!result.success) {
     const errors = result.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');

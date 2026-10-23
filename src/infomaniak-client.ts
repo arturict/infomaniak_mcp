@@ -379,6 +379,37 @@ export class InfomaniakClient {
     return (await response.json()) as T;
   }
 
+  /**
+   * Single non-JSON request (binary download or upload). Not retried: an
+   * upload is not idempotent, and downloads are cheap to re-request.
+   */
+  private async rawRequest(
+    method: 'GET' | 'POST',
+    path: string,
+    queryParams?: Record<string, string | number | boolean | undefined>,
+    payload?: { body: Uint8Array; contentType: string },
+  ): Promise<Response> {
+    await this.bucket.take();
+    const url = new URL(`${this.baseUrl}${path}`);
+    for (const [key, value] of Object.entries(queryParams ?? {})) {
+      if (value !== undefined) url.searchParams.append(key, String(value));
+    }
+    const headers: Record<string, string> = { Authorization: `Bearer ${this.token}` };
+    if (payload) headers['Content-Type'] = payload.contentType;
+    const response = await fetch(url, {
+      method,
+      headers,
+      // Copy into an ArrayBuffer-backed view, which is what BodyInit accepts.
+      body: payload ? new Uint8Array(payload.body) : undefined,
+      signal: AbortSignal.timeout(this.timeoutMs * 4),
+    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Infomaniak API Error (${response.status}): ${errorText.slice(0, 500)}`);
+    }
+    return response;
+  }
+
   private async request<T>(
     method: string,
     path: string,
@@ -722,6 +753,48 @@ export class InfomaniakClient {
 
   async removeKDriveFavorite(driveId: number, fileId: number): Promise<ApiResponse<void>> {
     return this.request<ApiResponse<void>>('DELETE', `/2/drive/${driveId}/files/${fileId}/favorite`);
+  }
+
+  /**
+   * Download a file's raw bytes. Refuses before reading the body when the
+   * server announces a larger size, and again after reading as a backstop.
+   */
+  async downloadKDriveFile(driveId: number, fileId: number, maxBytes: number): Promise<{ bytes: Uint8Array; contentType: string }> {
+    const response = await this.rawRequest('GET', `/2/drive/${driveId}/files/${fileId}/download`);
+    const announced = Number(response.headers.get('content-length') ?? '0');
+    if (announced > maxBytes) {
+      await response.body?.cancel();
+      throw new Error(`File too large to return (${announced} bytes, max ${maxBytes})`);
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > maxBytes) {
+      throw new Error(`File too large to return (${bytes.byteLength} bytes, max ${maxBytes})`);
+    }
+    return { bytes, contentType: response.headers.get('content-type') ?? 'application/octet-stream' };
+  }
+
+  /**
+   * Upload a file in one request (/3/drive/{id}/upload, as used by Infomaniak's
+   * official kDrive MCP server). `conflict` decides what happens when a file
+   * with the same name exists: `error`, `rename` (keep both) or `version`
+   * (replace and keep the old content as a version).
+   */
+  async uploadKDriveFile(
+    driveId: number,
+    upload: { directoryId: number; fileName: string; content: Uint8Array; conflict: 'error' | 'rename' | 'version' },
+  ): Promise<ApiResponse<KDriveFile>> {
+    const response = await this.rawRequest(
+      'POST',
+      `/3/drive/${driveId}/upload`,
+      {
+        directory_id: upload.directoryId,
+        file_name: upload.fileName,
+        total_size: upload.content.byteLength,
+        conflict: upload.conflict,
+      },
+      { body: upload.content, contentType: 'application/octet-stream' },
+    );
+    return (await response.json()) as ApiResponse<KDriveFile>;
   }
 
   // Swiss Backup

@@ -529,6 +529,33 @@ describe('InfomaniakClient', () => {
       );
     });
 
+    it('uploads raw bytes with the target directory and conflict mode in the query', async () => {
+      okJson();
+      await client.uploadKDriveFile(42, {
+        directoryId: 7,
+        fileName: 'offer.txt',
+        content: new TextEncoder().encode('hello'),
+        conflict: 'rename',
+      });
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(String(url)).toBe(
+        'https://api.infomaniak.com/3/drive/42/upload?directory_id=7&file_name=offer.txt&total_size=5&conflict=rename'
+      );
+      expect(init).toMatchObject({ method: 'POST', headers: { 'Content-Type': 'application/octet-stream' } });
+    });
+
+    it('refuses a download larger than the cap before reading it', async () => {
+      const cancel = vi.fn();
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers({ 'content-length': '2000' }),
+        body: { cancel },
+        arrayBuffer: () => Promise.reject(new Error('body must not be read')),
+      });
+      await expect(client.downloadKDriveFile(42, 5, 1000)).rejects.toThrow(/too large/);
+      expect(cancel).toHaveBeenCalled();
+    });
+
     it('moves a file with the destination in the path', async () => {
       okJson();
       await client.moveKDriveFile(42, 5, 9);

@@ -12,8 +12,17 @@ import {
   Tool,
   TextContent,
 } from "@modelcontextprotocol/sdk/types.js";
-import { InfomaniakClient } from "./infomaniak-client.js";
+import { InfomaniakClient, KDRIVE_ROOT_ID } from "./infomaniak-client.js";
 import { KChatClient } from "./kchat-client.js";
+import {
+  ToolContent,
+  MAX_BINARY_BYTES,
+  MAX_TEXT_CHARS,
+  binaryToContent,
+  decodeBase64,
+  isTextLike,
+  textFileToContent,
+} from "./content.js";
 import {
   validate,
   AccountIdSchema,
@@ -66,6 +75,8 @@ import {
   KDriveActivitySchema,
   KDriveFavoritesSchema,
   KDriveRestoreFileSchema,
+  DownloadKDriveFileSchema,
+  UploadKDriveFileSchema,
   UpdateMailboxAutoresponderSchema,
   KChatTeamIdSchema,
   KChatChannelIdSchema,
@@ -1113,6 +1124,35 @@ export const tools: Tool[] = [
     inputSchema: { type: "object", properties: { drive_id: { type: "number" }, file_id: { type: "number" } }, required: ["drive_id", "file_id"] },
   },
   {
+    name: "infomaniak_kdrive_download_file",
+    description: "Read a kDrive file's content. Text files (txt, md, csv, json, html, ...) are returned as text, truncated to max_chars. Other files up to 10 MB are returned as an image or embedded resource (base64), for example PDFs or Office documents.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        drive_id: { type: "number", description: "The kDrive ID" },
+        file_id: { type: "number", description: "The file ID" },
+        max_chars: { type: "number", description: `Maximum characters returned for text files (default and max ${MAX_TEXT_CHARS})` },
+      },
+      required: ["drive_id", "file_id"],
+    },
+  },
+  {
+    name: "infomaniak_kdrive_upload_file",
+    description: "Upload a file (max 10 MB) into a kDrive directory. Provide content_text for UTF-8 text or content_base64 for binary content.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        drive_id: { type: "number", description: "The kDrive ID" },
+        directory_id: { type: "number", description: "Destination directory ID (default: root, id 1)" },
+        file_name: { type: "string", description: "Name of the new file, without path" },
+        content_text: { type: "string", description: "UTF-8 text content" },
+        content_base64: { type: "string", description: "Base64-encoded binary content" },
+        conflict: { type: "string", enum: ["error", "rename", "version"], description: "If a file with that name exists: error, rename (keep both, default) or version (replace, keeping the old content as a version)" },
+      },
+      required: ["drive_id", "file_name"],
+    },
+  },
+  {
     name: "infomaniak_list_kdrive_favorites",
     description: "List favorite files in a kDrive",
     inputSchema: { type: "object", properties: { drive_id: { type: "number" } }, required: ["drive_id"] },
@@ -1697,6 +1737,43 @@ async function handleToolCall(
       return client.removeKDriveFavorite(validated.drive_id, validated.file_id);
     }
 
+    case "infomaniak_kdrive_download_file": {
+      const validated = validate(DownloadKDriveFileSchema, args);
+      const { data: file } = await client.getKDriveFile(validated.drive_id, validated.file_id);
+      if (file.type === "dir") throw new Error(`${file.name} is a directory; use infomaniak_list_kdrive_files`);
+      if (file.size > MAX_BINARY_BYTES) {
+        throw new Error(`${file.name} is ${file.size} bytes; files over ${MAX_BINARY_BYTES} bytes cannot be returned`);
+      }
+      const download = await client.downloadKDriveFile(validated.drive_id, validated.file_id, MAX_BINARY_BYTES);
+      const downloaded = {
+        filename: file.name,
+        mimeType: file.mime_type ?? download.contentType,
+        bytes: download.bytes,
+      };
+      const metadata = { drive_id: validated.drive_id, file_id: file.id };
+      return new ToolContent(
+        isTextLike(downloaded.mimeType, downloaded.filename)
+          ? textFileToContent(downloaded, validated.max_chars ?? MAX_TEXT_CHARS, metadata)
+          : binaryToContent(downloaded, `infomaniak-kdrive://${validated.drive_id}/${file.id}`, metadata),
+      );
+    }
+
+    case "infomaniak_kdrive_upload_file": {
+      const validated = validate(UploadKDriveFileSchema, args);
+      const content = validated.content_text !== undefined
+        ? new TextEncoder().encode(validated.content_text)
+        : decodeBase64(validated.content_base64 ?? "");
+      if (content.byteLength > MAX_BINARY_BYTES) {
+        throw new Error(`Upload is ${content.byteLength} bytes; the limit is ${MAX_BINARY_BYTES} bytes`);
+      }
+      return client.uploadKDriveFile(validated.drive_id, {
+        directoryId: validated.directory_id ?? KDRIVE_ROOT_ID,
+        fileName: validated.file_name,
+        content,
+        conflict: validated.conflict,
+      });
+    }
+
     case "infomaniak_list_kdrive_favorites": {
       const validated = validate(KDriveFavoritesSchema, args);
       return client.listKDriveFavorites(validated.drive_id);
@@ -1829,6 +1906,7 @@ export function createMcpServer(client: InfomaniakClient, kchatClient?: KChatCli
 
     try {
       const result = await handleToolCall(client, name, args, kchatClient);
+      if (result instanceof ToolContent) return { content: result.content };
 
       const content: TextContent[] = [
         {
