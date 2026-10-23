@@ -194,6 +194,9 @@ interface DraftPayload {
   delay: number;
 }
 
+/** RequestInit with plain-object headers, so they can be merged without casts. */
+type MailRequestInit = Omit<RequestInit, "headers"> & { headers?: Record<string, string> };
+
 export interface MailClientOptions {
   /** Mailbox used when a tool call names none: email address or UUID. */
   defaultMailbox?: string;
@@ -388,12 +391,12 @@ export class MailClient {
     this.defaultMailbox = options.defaultMailbox?.trim() || undefined;
   }
 
-  private async fetchOk(url: string, init: RequestInit = {}): Promise<Response> {
+  private async fetchOk(url: string, init: MailRequestInit = {}): Promise<Response> {
     const response = await fetch(url, {
       ...init,
       headers: {
         Authorization: `Bearer ${this.token}`,
-        ...(init.headers as Record<string, string> | undefined),
+        ...init.headers,
       },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
@@ -405,8 +408,8 @@ export class MailClient {
   }
 
   /** JSON request against the mail API; returns `data` of a successful envelope. */
-  private async apiRequest(path: string, init: RequestInit = {}, base = this.mailApiBase): Promise<unknown> {
-    const headers: Record<string, string> = { "Content-Type": "application/json", ...(init.headers as Record<string, string> | undefined) };
+  private async apiRequest(path: string, init: MailRequestInit = {}, base = this.mailApiBase): Promise<unknown> {
+    const headers = { "Content-Type": "application/json", ...init.headers };
     const response = await this.fetchOk(`${base}${path}`, { ...init, headers });
     const json: unknown = await response.json();
     if (!isRecord(json) || json.result !== "success") {

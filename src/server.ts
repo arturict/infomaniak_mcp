@@ -21,6 +21,7 @@ import {
   ToolContent,
   MAX_BINARY_BYTES,
   MAX_TEXT_CHARS,
+  DEFAULT_TEXT_CHARS,
   binaryToContent,
   decodeBase64,
   isTextLike,
@@ -1154,7 +1155,7 @@ export const tools: Tool[] = [
       properties: {
         drive_id: { type: "number", description: "The kDrive ID" },
         file_id: { type: "number", description: "The file ID" },
-        max_chars: { type: "number", description: `Maximum characters returned for text files (default and max ${MAX_TEXT_CHARS})` },
+        max_chars: { type: "number", description: `Maximum characters returned for text files (default ${DEFAULT_TEXT_CHARS}, max ${MAX_TEXT_CHARS})` },
       },
       required: ["drive_id", "file_id"],
     },
@@ -1828,7 +1829,7 @@ async function handleToolCall(
       const metadata = { drive_id: validated.drive_id, file_id: file.id };
       return new ToolContent(
         isTextLike(downloaded.mimeType, downloaded.filename)
-          ? textFileToContent(downloaded, validated.max_chars ?? MAX_TEXT_CHARS, metadata)
+          ? textFileToContent(downloaded, validated.max_chars ?? DEFAULT_TEXT_CHARS, metadata)
           : binaryToContent(downloaded, `infomaniak-kdrive://${validated.drive_id}/${file.id}`, metadata),
       );
     }

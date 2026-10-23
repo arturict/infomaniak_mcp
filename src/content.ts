@@ -10,8 +10,9 @@ import type { ContentBlock } from "@modelcontextprotocol/sdk/types.js";
 /** Largest binary returned inline as an image or embedded resource. */
 export const MAX_BINARY_BYTES = 10 * 1024 * 1024;
 
-/** Largest text file returned inline before it is truncated. */
+/** Upper bound and default for text returned inline before truncation. */
 export const MAX_TEXT_CHARS = 200_000;
+export const DEFAULT_TEXT_CHARS = 50_000;
 
 /**
  * A tool result that is already a list of content blocks. The call handler
