@@ -12,7 +12,7 @@ import cors from "cors";
 import { randomUUID } from "crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import { createMcpServer, type ServerDeps } from "../server.js";
+import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 
 export interface HttpServerOptions {
   /** Port to listen on (default: 3000) */
@@ -31,11 +31,11 @@ const activeSessions = new Map<string, StreamableHTTPServerTransport>();
 /**
  * Start the MCP server with HTTP transport
  *
- * @param deps - API clients used by the tools
+ * @param createServer - Builds a configured MCP server for each session
  * @param options - HTTP server configuration options
  */
 export async function startHttpServer(
-  deps: ServerDeps,
+  createServer: () => Server,
   options: HttpServerOptions = {},
 ): Promise<void> {
   const port = options.port ?? 3000;
@@ -79,7 +79,7 @@ export async function startHttpServer(
       });
 
       // Create and connect the MCP server for this session
-      const server = createMcpServer(deps);
+      const server = createServer();
       await server.connect(transport);
 
       // Store session immediately if stateful mode (before handleRequest)

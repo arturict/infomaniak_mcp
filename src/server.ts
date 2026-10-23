@@ -16,6 +16,7 @@ import { InfomaniakClient, KDRIVE_ROOT_ID } from "./infomaniak-client.js";
 import { KChatClient } from "./kchat-client.js";
 import { MailClient } from "./mail-client.js";
 import { mailTools, handleMailToolCall } from "./mail-tools.js";
+import { type ToolPolicy, callRefusal, isToolListed } from "./tool-policy.js";
 import {
   ToolContent,
   MAX_BINARY_BYTES,
@@ -1300,6 +1301,39 @@ export interface ServerDeps {
   kchatClient?: KChatClient | null;
 }
 
+export interface ServerOptions {
+  policy: ToolPolicy;
+  /** kDrive used when a tool call omits drive_id (env KDRIVE_ID). */
+  defaultDriveId?: number;
+}
+
+function takesDriveId(tool: Tool): boolean {
+  return !!tool.inputSchema.properties && "drive_id" in tool.inputSchema.properties;
+}
+
+/** With a default kDrive, drive_id becomes optional in the advertised schema. */
+function withDriveDefault(tool: Tool, defaultDriveId: number | undefined): Tool {
+  if (defaultDriveId === undefined || !takesDriveId(tool)) return tool;
+  return {
+    ...tool,
+    inputSchema: {
+      ...tool.inputSchema,
+      properties: {
+        ...tool.inputSchema.properties,
+        drive_id: { type: "number", description: `The kDrive ID (default ${defaultDriveId})` },
+      },
+      required: (tool.inputSchema.required ?? []).filter((r) => r !== "drive_id"),
+    },
+  };
+}
+
+/** Tools advertised by a server with these options. */
+export function listedTools(options: ServerOptions): Tool[] {
+  return tools
+    .filter((tool) => isToolListed(tool.name, options.policy))
+    .map((tool) => withDriveDefault(tool, options.defaultDriveId));
+}
+
 /**
  * Handle a tool call and return the result
  */
@@ -1893,9 +1927,10 @@ async function handleKChatToolCall(
  * Create and configure an MCP server instance
  *
  * @param deps - API clients used by the tools
+ * @param options - Tool policy and defaults
  * @returns Configured MCP Server instance
  */
-export function createMcpServer(deps: ServerDeps): Server {
+export function createMcpServer(deps: ServerDeps, options: ServerOptions): Server {
   const server = new Server(
     {
       name: "infomaniak-mcp-server",
@@ -1909,13 +1944,26 @@ export function createMcpServer(deps: ServerDeps): Server {
   );
 
   // Handle list tools request
+  const advertised = listedTools(options);
+  const driveTools = new Set(tools.filter(takesDriveId).map((tool) => tool.name));
+
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    return { tools };
+    return { tools: advertised };
   });
 
   // Handle tool calls
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
+    const { name } = request.params;
+    let args = request.params.arguments;
+
+    // Refuse hidden tools before validation, so nothing reaches the API.
+    const refusal = callRefusal(name, args, options.policy);
+    if (refusal) {
+      return { content: [{ type: "text", text: `Error: ${refusal}` }], isError: true };
+    }
+    if (options.defaultDriveId !== undefined && driveTools.has(name) && args?.drive_id === undefined) {
+      args = { ...args, drive_id: options.defaultDriveId };
+    }
 
     try {
       const result = await handleToolCall(deps, name, args);

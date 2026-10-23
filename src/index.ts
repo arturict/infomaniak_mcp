@@ -18,6 +18,8 @@
 import { InfomaniakClient } from "./infomaniak-client.js";
 import { KChatClient } from "./kchat-client.js";
 import { MailClient } from "./mail-client.js";
+import { createMcpServer } from "./server.js";
+import { policyFromEnv, type ToolPolicy } from "./tool-policy.js";
 import { startStdioServer } from "./transports/stdio.js";
 import { startHttpServer } from "./transports/http.js";
 
@@ -46,6 +48,27 @@ const mailClient = new MailClient(API_TOKEN, { defaultMailbox: process.env.INFOM
 
 const deps = { client, mailClient, kchatClient };
 
+function fail(message: string): never {
+  console.error(`Error: ${message}`);
+  process.exit(1);
+}
+
+let policy: ToolPolicy;
+try {
+  policy = policyFromEnv(process.env);
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
+}
+
+const rawDriveId = process.env.KDRIVE_ID?.trim();
+const defaultDriveId = rawDriveId ? Number(rawDriveId) : undefined;
+if (defaultDriveId !== undefined && !(Number.isInteger(defaultDriveId) && defaultDriveId > 0)) {
+  fail("KDRIVE_ID must be a positive integer");
+}
+
+const serverOptions = { policy, defaultDriveId };
+const createServer = () => createMcpServer(deps, serverOptions);
+
 // Get transport configuration from environment
 const transport = process.env.MCP_TRANSPORT || "stdio";
 const port = parseInt(process.env.PORT || process.env.MCP_PORT || "3000", 10);
@@ -54,9 +77,9 @@ const stateless = process.env.MCP_STATELESS === "true";
 // Start the server with the selected transport
 async function main() {
   if (transport === "http") {
-    await startHttpServer(deps, { port, stateless });
+    await startHttpServer(createServer, { port, stateless });
   } else if (transport === "stdio") {
-    await startStdioServer(deps);
+    await startStdioServer(createServer);
   } else {
     console.error(`Error: Unknown transport '${transport}'. Use 'stdio' or 'http'.`);
     process.exit(1);

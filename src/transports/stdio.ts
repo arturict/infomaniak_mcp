@@ -6,15 +6,15 @@
  */
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { createMcpServer, type ServerDeps } from "../server.js";
+import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 
 /**
  * Start the MCP server with stdio transport
  *
- * @param deps - API clients used by the tools
+ * @param createServer - Builds the configured MCP server
  */
-export async function startStdioServer(deps: ServerDeps): Promise<void> {
-  const server = createMcpServer(deps);
+export async function startStdioServer(createServer: () => Server): Promise<void> {
+  const server = createServer();
   const transport = new StdioServerTransport();
 
   await server.connect(transport);
