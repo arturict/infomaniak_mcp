@@ -67,11 +67,16 @@ if (defaultDriveId !== undefined && !(Number.isInteger(defaultDriveId) && defaul
   fail("KDRIVE_ID must be a positive integer");
 }
 
+// Get transport configuration from environment
+const transport = process.env.MCP_TRANSPORT || "stdio";
+
+if (transport === "http" && !process.env.MCP_AUTH_TOKEN && process.env.MCP_ALLOW_NO_AUTH !== "true") {
+  fail("MCP_AUTH_TOKEN is required for the HTTP transport. Set MCP_ALLOW_NO_AUTH=true only behind a proxy that authenticates.");
+}
+
 const serverOptions = { policy, defaultDriveId };
 const createServer = () => createMcpServer(deps, serverOptions);
 
-// Get transport configuration from environment
-const transport = process.env.MCP_TRANSPORT || "stdio";
 const port = parseInt(process.env.PORT || process.env.MCP_PORT || "3000", 10);
 const stateless = process.env.MCP_STATELESS === "true";
 
