@@ -40,8 +40,8 @@ Feature suggestions are welcome! When suggesting a feature:
 
 ```bash
 # Clone your fork
-git clone https://github.com/YOUR_USERNAME/infomaniak-mcp-server.git
-cd infomaniak-mcp-server
+git clone https://github.com/YOUR_USERNAME/infomaniak_mcp.git
+cd infomaniak_mcp
 
 # Install dependencies
 npm install
