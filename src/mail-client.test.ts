@@ -80,6 +80,31 @@ describe("reading", () => {
     });
   });
 
+  it("returns Bcc and the threading headers, and null where the API gave no Bcc", async () => {
+    respondWith({
+      [`GET ${API}/mail/uuid-1/folder/S1/message/7`]: () => ({
+        uid: "7@S1",
+        msg_id: "<m7@example.com>",
+        subject: "Re: Offerte",
+        to: [{ name: "", email: "client@example.com" }],
+        cc: [],
+        bcc: [{ name: "Archiv", email: "archiv@example.com" }],
+        in_reply_to: "<m42@example.com>",
+        references: "<m1@example.com> <m42@example.com>",
+        body: { type: "text/plain", value: "Danke" },
+      }),
+      [`GET ${API}/mail/uuid-1/folder/S1/message/8`]: () => ({ uid: "8@S1", subject: "x", body: { type: "text/plain", value: "y" } }),
+    });
+    const c = client();
+    expect(await c.readEmail("uuid-1", "S1", "7", { format: "text", maxChars: 100 })).toMatchObject({
+      cc: "",
+      bcc: "Archiv <archiv@example.com>",
+      in_reply_to: "<m42@example.com>",
+      references: "<m1@example.com> <m42@example.com>",
+    });
+    expect(await c.readEmail("uuid-1", "S1", "8", { format: "text", maxChars: 100 })).toMatchObject({ bcc: null, in_reply_to: null });
+  });
+
   it("refuses to combine unseen and flagged filters", async () => {
     await expect(client().listEmails("uuid-1", "F1", { limit: 5, offset: 0, unseen: true, flagged: true }))
       .rejects.toThrow(/one filter/);
