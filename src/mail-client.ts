@@ -609,7 +609,11 @@ export class MailClient {
       from: formatAddresses(data.from),
       to: formatAddresses(data.to),
       cc: formatAddresses(data.cc),
+      // null when the API did not return the field, so a caller can tell «no Bcc» from «unknown».
+      bcc: Array.isArray(data.bcc) ? formatAddresses(data.bcc) : null,
       reply_to: formatAddresses(data.reply_to),
+      in_reply_to: str(data.in_reply_to) ?? null,
+      references: str(data.references) ?? null,
       date: str(data.date) ?? null,
       seen: bool(data.seen) ?? null,
       flagged: bool(data.flagged) ?? null,
