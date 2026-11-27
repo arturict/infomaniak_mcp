@@ -189,8 +189,8 @@ low-risk in the `account`, `mail`, `drive` and `domain` groups.
 | `infomaniak_mail_search_emails` | read | Search by text, sender, recipient, subject, dates |
 | `infomaniak_mail_read_email` | read | One e-mail as plain text (or cleaned HTML), attachments, reply id |
 | `infomaniak_mail_download_attachment` | read | Attachment up to 10 MB as image or embedded resource |
-| `infomaniak_mail_create_draft` | low-risk | Draft, optionally as a threaded reply and with base64 attachments |
-| `infomaniak_mail_update_draft` | low-risk | Change a draft |
+| `infomaniak_mail_create_draft` | low-risk | HTML draft (paragraphs and links kept) followed by the sender identity's kMail signature, fetched per draft (`signature: false` turns it off); optionally a threaded reply and base64 attachments |
+| `infomaniak_mail_update_draft` | low-risk | Change a draft; a replaced body gets the signature again unless `signature: false` |
 | `infomaniak_mail_delete_draft` | low-risk | Delete a draft |
 | `infomaniak_mail_move_emails` | low-risk | Move messages to another folder |
 | `infomaniak_mail_mark_seen` | low-risk | Mark read or unread |

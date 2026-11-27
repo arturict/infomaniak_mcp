@@ -407,6 +407,7 @@ export const MailCreateDraftSchema = z.object({
   references: z.string().optional(),
   from_email: z.string().optional(),
   from_name: z.string().optional(),
+  signature: z.boolean().optional(),
   attachments: z.array(DraftAttachment).max(10).optional(),
 });
 
@@ -418,6 +419,7 @@ export const MailUpdateDraftSchema = z.object({
   body: z.string().optional(),
   cc: z.string().optional(),
   bcc: z.string().optional(),
+  signature: z.boolean().optional(),
   attachments: z.array(DraftAttachment).max(10).optional(),
 });
 

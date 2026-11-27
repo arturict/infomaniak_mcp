@@ -143,7 +143,7 @@ export const mailTools: Tool[] = [
         mailbox,
         to: { type: "string", description: "Recipient address(es), comma-separated" },
         subject: { type: "string" },
-        body: { type: "string", description: "Plain-text body" },
+        body: { type: "string", description: "Plain-text body: blank lines make paragraphs, bare URLs are linked. Saved as an HTML draft followed by the sender's signature" },
         cc: { type: "string", description: "CC address(es), comma-separated" },
         bcc: { type: "string", description: "BCC address(es), comma-separated" },
         in_reply_to_uid: { type: "string", description: "Message being replied to, as UID@folder_id (reply_to_uid from read_email)" },
@@ -151,6 +151,7 @@ export const mailTools: Tool[] = [
         references: { type: "string", description: "References header (resolved from in_reply_to_uid when omitted)" },
         from_email: { type: "string", description: "Sender: the mailbox address or one of its aliases" },
         from_name: { type: "string", description: "Preferred display name; the name of the matching kMail identity wins" },
+        signature: { type: "boolean", description: "Append the sender identity's kMail signature (default true, fetched from Infomaniak; skipped when the body already contains it). Pass false for no signature" },
         attachments,
       },
       required: ["to", "subject", "body"],
@@ -169,6 +170,7 @@ export const mailTools: Tool[] = [
         body: { type: "string", description: "Plain-text body (replaces the current body)" },
         cc: { type: "string" },
         bcc: { type: "string" },
+        signature: { type: "boolean", description: "Append the sender identity's kMail signature (default true, fetched from Infomaniak; skipped when the body already contains it). Pass false for no signature" },
         attachments,
       },
       required: ["draft_uuid"],
@@ -300,6 +302,7 @@ export async function handleMailToolCall(
         references: v.references,
         fromEmail: v.from_email,
         fromName: v.from_name,
+        signature: v.signature,
         attachments: decodeAttachments(v.attachments),
       });
     }
@@ -313,6 +316,7 @@ export async function handleMailToolCall(
         body: v.body,
         cc: v.cc,
         bcc: v.bcc,
+        signature: v.signature,
         attachments: decodeAttachments(v.attachments),
       });
     }
