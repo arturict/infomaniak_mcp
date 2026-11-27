@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { MailClient, draftPayloadFromApi } from "./mail-client.js";
+import { MailClient, draftPayloadFromApi, createHtmlBody, bodyHasSignature, pickSignature } from "./mail-client.js";
 
 const API = "https://mail.example.com/api";
 const MANAGER = "https://manager.example.com/1";
@@ -160,6 +160,97 @@ describe("drafts", () => {
     });
     await expect(client().updateDraft("uuid-1", "unknown", { subject: "y" })).rejects.toThrow(/create a new draft/);
     expect(calls("PUT")).toHaveLength(0);
+  });
+});
+
+const SIGNATURE = '<table><tr><td><img src="https://example.com/a.png" alt="A"></td><td><div>Artur Ferreira</div><div>Gründer, Example</div></td></tr></table>';
+
+function signatureRoutes(extra: Record<string, Route> = {}) {
+  return {
+    [`GET ${API}/mailbox`]: mailboxes,
+    [`GET ${MANAGER}/mail_hostings/7/mailboxes/info/signatures`]: () => ({
+      signatures: [
+        { id: 1, sender: null, full_name: "Artur", content: "<div>old</div>", is_default: false },
+        { id: 3, sender: null, name: "Standard", full_name: "Artur", content: SIGNATURE, is_default: true },
+      ],
+      default_signature_id: 3,
+      default_reply_signature_id: 3,
+    }),
+    [`POST ${API}/mail/uuid-1/draft`]: () => ({ uuid: "d-1", uid: "900" }),
+    [`PUT ${API}/mail/uuid-1/draft/d-1`]: () => ({ uid: "901" }),
+    ...extra,
+  };
+}
+
+describe("draft body and signature", () => {
+  it("renders paragraphs, line breaks and links, then the signature", () => {
+    const html = createHtmlBody("Hallo <b>\nZeile 2\n\nSiehe https://a.example/x?y=1&z=2.", SIGNATURE);
+    expect(html).toContain("<p");
+    expect(html).toContain("Hallo &lt;b&gt;<br>Zeile 2</p>");
+    expect(html).toContain('<a href="https://a.example/x?y=1&amp;z=2">https://a.example/x?y=1&amp;z=2</a>.</p>');
+    expect(html.indexOf("Siehe")).toBeLessThan(html.indexOf("Artur Ferreira"));
+    expect(html).toContain(SIGNATURE);
+  });
+
+  it("detects a body that already has the signature", () => {
+    expect(bodyHasSignature("Hi\n\nArtur Ferreira\nGründer, Example", SIGNATURE)).toBe(true);
+    expect(bodyHasSignature("see https://example.com/a.png", SIGNATURE)).toBe(true);
+    expect(bodyHasSignature("Grüsse\nArtur Ferreira", SIGNATURE)).toBe(false);
+  });
+
+  it("prefers the reply default for replies and a signature that fits the sender", () => {
+    const set = {
+      signatures: [
+        { id: 1, sender: "other@example.com", content: "<p>other</p>", is_default: true },
+        { id: 2, sender: null, content: "<p>new</p>" },
+        { id: 3, sender: null, content: "<p>reply</p>" },
+      ],
+      defaultId: "2",
+      defaultReplyId: "3",
+    };
+    expect(pickSignature(set, "info@example.com", false)?.id).toBe(2);
+    expect(pickSignature(set, "info@example.com", true)?.id).toBe(3);
+    expect(pickSignature(set, "other@example.com", false)?.id).toBe(2);
+    expect(pickSignature({ signatures: [], defaultId: null, defaultReplyId: null }, "a@b.c", false)).toBeNull();
+  });
+
+  it("creates a threaded HTML draft with the fetched signature", async () => {
+    respondWith(signatureRoutes({
+      [`GET ${API}/mail/uuid-1/folder/F1/message/42`]: () => ({ msg_id: "<m42@example.com>", headers: {} }),
+    }));
+    const result = await client().createDraft(undefined, { to: "me@example.com", subject: "Re: x", body: "Hallo", inReplyToUid: "42@F1" });
+    const saved = JSON.parse(String(calls("POST")[0][1].body));
+    expect(saved).toMatchObject({ mime_type: "text/html", in_reply_to: "<m42@example.com>" });
+    expect(saved.body).toContain(SIGNATURE);
+    expect(result.signature).toMatchObject({ applied: true, id: "3", name: "Standard" });
+  });
+
+  it("leaves the body alone with signature: false or when it already has the signature", async () => {
+    respondWith(signatureRoutes());
+    const c = client();
+    await c.createDraft(undefined, { to: "me@example.com", subject: "s", body: "Hallo", signature: false });
+    await c.createDraft(undefined, { to: "me@example.com", subject: "s", body: "Hallo\nArtur Ferreira\nGründer, Example" });
+    const [off, dup] = calls("POST").map(([, init]) => JSON.parse(String(init.body)).body as string);
+    expect(off).not.toContain("<table");
+    expect(dup).not.toContain("<table");
+  });
+
+  it("refuses to save an unsigned draft when the signature cannot be loaded", async () => {
+    respondWith({ [`GET ${API}/mailbox`]: mailboxes });
+    await expect(client().createDraft(undefined, { to: "me@example.com", subject: "s", body: "x" })).rejects.toThrow(/signature/);
+    expect(calls("POST")).toHaveLength(0);
+  });
+
+  it("adds the signature when a draft body is replaced, and only then", async () => {
+    respondWith(signatureRoutes());
+    const c = client();
+    await c.createDraft(undefined, { to: "me@example.com", subject: "s", body: "v1", signature: false });
+    const changed = await c.updateDraft("uuid-1", "d-1", { body: "v2" });
+    expect(JSON.parse(String(calls("PUT")[0][1].body)).body).toContain(SIGNATURE);
+    expect(changed.signature).toMatchObject({ applied: true });
+    const before = JSON.parse(String(calls("PUT")[0][1].body)).body;
+    await c.updateDraft("uuid-1", "d-1", { subject: "s2" });
+    expect(JSON.parse(String(calls("PUT")[1][1].body)).body).toBe(before);
   });
 });
 

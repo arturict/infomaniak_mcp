@@ -154,6 +154,8 @@ export interface DraftInput {
   fromEmail?: string;
   fromName?: string;
   attachments?: DraftAttachmentInput[];
+  /** Append the sender identity's signature (default true). */
+  signature?: boolean;
 }
 
 export interface DraftChanges {
@@ -163,6 +165,8 @@ export interface DraftChanges {
   cc?: string;
   bcc?: string;
   attachments?: DraftAttachmentInput[];
+  /** Append the sender identity's signature to a changed body (default true). */
+  signature?: boolean;
 }
 
 /** The draft fields the API accepts on save; mirrors the official payload. */
@@ -240,9 +244,75 @@ function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (char) => replacements[char]);
 }
 
-export function createHtmlBody(body: string): string {
-  const escapedBody = escapeHtml(body).replace(/\n/g, "<br>");
-  return `<html><body><div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 14px;">${escapedBody}</div></body></html>`;
+const BODY_STYLE = "font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 14px;";
+
+/** Escape plain text for HTML and link bare http(s) URLs; trailing punctuation stays outside the link. */
+function linkifyEscaped(text: string): string {
+  return text
+    .split(/(https?:\/\/[^\s<>"]+)/g)
+    .map((part, i) => {
+      if (i % 2 === 0) return escapeHtml(part);
+      const url = part.replace(/[.,;:!?)\]]+$/, "");
+      const rest = part.slice(url.length);
+      return `<a href="${escapeHtml(url)}">${escapeHtml(url)}</a>${escapeHtml(rest)}`;
+    })
+    .join("");
+}
+
+/** Plain text to HTML: blank lines separate paragraphs, single newlines become line breaks. */
+export function plainTextToHtml(body: string): string {
+  const paragraphs = body.replace(/\r\n?/g, "\n").trim().split(/\n{2,}/);
+  return paragraphs
+    .map((p) => `<p style="margin: 0 0 1em 0;">${linkifyEscaped(p).replace(/\n/g, "<br>")}</p>`)
+    .join("");
+}
+
+/** The HTML draft body: the plain text rendered as HTML, then the signature when given. */
+export function createHtmlBody(body: string, signatureHtml?: string): string {
+  const signature = signatureHtml ? `<div data-ik-opengraph-ignore="">${signatureHtml}</div>` : "";
+  return `<html><body><div style="${BODY_STYLE}">${plainTextToHtml(body)}</div>${signature}</body></html>`;
+}
+
+function normaliseText(text: string): string {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/** True when the plain-text body already carries the signature (its text or one of its images), so it is not added twice. */
+export function bodyHasSignature(body: string, signatureHtml: string): boolean {
+  const signatureText = normaliseText(htmlToText(signatureHtml));
+  if (signatureText.length > 0 && normaliseText(body).includes(signatureText)) return true;
+  const sources = [...signatureHtml.matchAll(/<img\b[^>]*?\bsrc=["']([^"']+)["']/gi)].map((m) => m[1]);
+  return sources.some((src) => body.includes(src));
+}
+
+export interface SignatureSet {
+  signatures: JsonRecord[];
+  defaultId: string | null;
+  defaultReplyId: string | null;
+}
+
+/**
+ * The signature kMail would insert for this sender: the account's default
+ * (reply default for replies) when it applies to the sender, else the
+ * sender's own default signature. A signature without a sender applies to
+ * every address of the mailbox.
+ */
+export function pickSignature(set: SignatureSet, fromEmail: string, isReply: boolean): JsonRecord | null {
+  const usable = set.signatures.filter((s) => {
+    if ((str(s.content)?.trim().length ?? 0) === 0) return false;
+    const sender = str(s.sender)?.trim().toLowerCase();
+    return !sender || sender === fromEmail.toLowerCase();
+  });
+  const defaultId = isReply ? set.defaultReplyId ?? set.defaultId : set.defaultId;
+  const own = (s: JsonRecord) => str(s.sender)?.trim().toLowerCase() === fromEmail.toLowerCase();
+  return (
+    usable.find((s) => defaultId !== null && String(s.id) === defaultId) ??
+    usable.find((s) => own(s) && s.is_default === true) ??
+    usable.find((s) => s.is_default === true) ??
+    usable.find(own) ??
+    usable[0] ??
+    null
+  );
 }
 
 function parseFilename(contentDisposition: string, fallback: string): string {
@@ -652,9 +722,8 @@ export class MailClient {
 
   // ---- Drafts --------------------------------------------------------------
 
-  private async getIdentities(mailbox: MailboxInfo): Promise<JsonRecord[]> {
-    const cached = this.identitiesCache.get(mailbox.uuid);
-    if (cached) return cached;
+  /** The mailbox's signatures and defaults, always fetched fresh so a change in kSuite shows up in the next draft. */
+  private async fetchSignatureSet(mailbox: MailboxInfo): Promise<SignatureSet> {
     if (mailbox.hosting_id === null || !mailbox.mailbox) {
       throw new Error("Mailbox is missing hosting_id or mailbox name; cannot load identities");
     }
@@ -664,9 +733,52 @@ export class MailClient {
       this.managerApiBase,
     );
     if (!isRecord(data) || !Array.isArray(data.signatures)) throw new Error("Unexpected signatures response");
-    const signatures = records(data.signatures);
+    const id = (value: unknown) => (value === null || value === undefined || value === 0 ? null : String(value));
+    return {
+      signatures: records(data.signatures),
+      defaultId: id(data.default_signature_id),
+      defaultReplyId: id(data.default_reply_signature_id),
+    };
+  }
+
+  private async getIdentities(mailbox: MailboxInfo): Promise<JsonRecord[]> {
+    const cached = this.identitiesCache.get(mailbox.uuid);
+    if (cached) return cached;
+    const { signatures } = await this.fetchSignatureSet(mailbox);
     this.identitiesCache.set(mailbox.uuid, signatures);
     return signatures;
+  }
+
+  /**
+   * The HTML body for a draft. With `signature` on (the default) the mailbox
+   * identity's own signature follows the text; a failed lookup is an error
+   * rather than a silently unsigned draft.
+   */
+  private async buildBody(
+    mailbox: MailboxInfo,
+    text: string,
+    fromEmail: string,
+    isReply: boolean,
+    signature: boolean,
+  ): Promise<{ html: string; signature: { applied: boolean; id: string | null; name: string | null; reason?: string } }> {
+    if (!signature) return { html: createHtmlBody(text), signature: { applied: false, id: null, name: null, reason: "disabled" } };
+    let picked: JsonRecord | null;
+    try {
+      picked = pickSignature(await this.fetchSignatureSet(mailbox), fromEmail, isReply);
+    } catch (error) {
+      throw new Error(
+        `Could not load the signature for ${mailbox.email} (${error instanceof Error ? error.message : String(error)}); retry, or pass signature: false for a draft without one`,
+      );
+    }
+    const content = picked ? str(picked.content) : undefined;
+    if (!picked || !content) {
+      return { html: createHtmlBody(text), signature: { applied: false, id: null, name: null, reason: "no signature configured for this sender" } };
+    }
+    const meta = { id: picked.id !== undefined ? String(picked.id) : null, name: str(picked.name) ?? null };
+    if (bodyHasSignature(text, content)) {
+      return { html: createHtmlBody(text), signature: { applied: false, ...meta, reason: "body already contains the signature" } };
+    }
+    return { html: createHtmlBody(text, content), signature: { applied: true, ...meta } };
   }
 
   private async resolveFrom(
@@ -820,10 +932,11 @@ export class MailClient {
     }
 
     const from = await this.resolveFrom(mailbox, input.fromEmail, input.fromName);
+    const body = await this.buildBody(mailbox, input.body, from.email, inReplyTo !== null, input.signature ?? true);
     const payload: DraftPayload = {
       uuid: null,
       subject: input.subject,
-      body: createHtmlBody(input.body),
+      body: body.html,
       quote: null,
       mime_type: "text/html",
       from: { id: null, name: from.name, email: from.email },
@@ -877,6 +990,7 @@ export class MailClient {
       in_reply_to: inReplyTo,
       attachments: attachmentCount,
       resolved_from: { email: from.email, name: from.name, identity_id: from.identityId },
+      signature: body.signature,
       ...(from.warnings.length > 0 ? { warnings: from.warnings } : {}),
     };
   }
@@ -885,7 +999,13 @@ export class MailClient {
     const payload = await this.loadDraft(mailboxUuid, draftUuid);
     if (changes.to !== undefined) payload.to = parseRecipients(changes.to);
     if (changes.subject !== undefined) payload.subject = changes.subject;
-    if (changes.body !== undefined) payload.body = createHtmlBody(changes.body);
+    let signature: Awaited<ReturnType<MailClient["buildBody"]>>["signature"] | undefined;
+    if (changes.body !== undefined) {
+      const mailbox = await this.resolveMailbox(mailboxUuid);
+      const body = await this.buildBody(mailbox, changes.body, payload.from.email, payload.in_reply_to !== null, changes.signature ?? true);
+      payload.body = body.html;
+      signature = body.signature;
+    }
     if (changes.cc !== undefined) payload.cc = parseRecipients(changes.cc);
     if (changes.bcc !== undefined) payload.bcc = parseRecipients(changes.bcc);
     if (changes.attachments?.length) {
@@ -912,6 +1032,7 @@ export class MailClient {
       cc: payload.cc?.map((r) => r.email).join(", ") ?? "",
       bcc: payload.bcc?.map((r) => r.email).join(", ") ?? "",
       attachments: payload.attachments.length,
+      ...(signature ? { signature } : {}),
     };
   }
 
